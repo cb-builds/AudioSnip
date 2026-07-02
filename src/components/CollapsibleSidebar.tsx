@@ -8,6 +8,13 @@ interface CollapsibleSidebarProps {
   /** Which edge of the workspace this sidebar sits on - controls which way the chevrons point. */
   side: "left" | "right";
   children: ReactNode;
+  /**
+   * Rendered below `children` but pinned to the bottom of the column and
+   * excluded from `children`'s own scroll area - e.g. a persistent utility
+   * section that shouldn't be pushed down or out of view as the main list
+   * above it grows.
+   */
+  footer?: ReactNode;
 }
 
 const COLLAPSED_WIDTH = 28;
@@ -25,6 +32,7 @@ export function CollapsibleSidebar({
   width,
   side,
   children,
+  footer,
 }: CollapsibleSidebarProps) {
   const expandIcon = side === "left" ? "›" : "‹";
   const collapseIcon = side === "left" ? "‹" : "›";
@@ -51,8 +59,8 @@ export function CollapsibleSidebar({
           </span>
         </button>
       ) : (
-        <div style={{ width }} className="flex h-full flex-col gap-2 overflow-y-auto p-2">
-          <div className="flex items-center justify-between px-1">
+        <div style={{ width }} className="flex h-full flex-col gap-2 p-2">
+          <div className="flex shrink-0 items-center justify-between px-1">
             <span className="text-xs uppercase tracking-wide text-neutral-500">{label}</span>
             <button
               type="button"
@@ -63,7 +71,8 @@ export function CollapsibleSidebar({
               {collapseIcon}
             </button>
           </div>
-          {children}
+          <div className="flex min-w-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden">{children}</div>
+          {footer && <div className="shrink-0 border-t border-neutral-800 pt-2">{footer}</div>}
         </div>
       )}
     </div>

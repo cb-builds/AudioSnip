@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::audio::capture::wasapi::WasapiCaptureBackend;
 use crate::audio::capture::{CaptureBackend, StreamFormat};
 use crate::audio::ring_buffer::RollingBuffer;
-use crate::commands::CaptureStatus;
+use crate::commands::{CaptureStatus, TrackSnapshot};
 use crate::hotkey;
 
 /// Default rolling-buffer duration, in seconds, used until the user changes
@@ -33,16 +33,33 @@ pub struct AppState {
     /// `export_clip` can reuse exactly what the user saw/edited rather than
     /// whatever the live rolling buffer has moved on to by export time.
     pub last_snapshot: Mutex<HashMap<String, Vec<f32>>>,
-    /// The accelerator string of the currently registered global hotkey, so
-    /// `update_hotkey` knows what to unregister before binding a new one.
-    pub current_hotkey: Mutex<String>,
+    /// Accelerator string currently bound to each named hotkey action
+    /// (`hotkey::ACTION_CAPTURE_SNIP`/`ACTION_SHOW_APP`/`ACTION_RESET_BUFFER`)
+    /// - empty means "unbound". Lets `update_hotkey` know what to unregister
+    /// before binding a new one for that action.
+    pub hotkeys: Mutex<HashMap<String, String>>,
     /// Rolling-buffer duration (seconds) applied to newly-started captures.
     /// Changing this does not resize buffers already in use.
     pub buffer_duration_secs: Mutex<u32>,
-    /// The global hotkey's capture lifecycle - set by `hotkey::on_hotkey_triggered`
+    /// The global hotkey's capture lifecycle - set by `hotkey::trigger_capture`
     /// and polled by the frontend via the `get_capture_status` command
     /// instead of a push event (see `CaptureStatus`'s docs for why).
     pub capture_status: Mutex<CaptureStatus>,
+    /// A freshly captured clip that's held here (not yet committed to
+    /// `last_snapshot`) while the frontend's own themed confirmation modal
+    /// asks the user whether it should overwrite the clip already loaded -
+    /// see `commands::confirm_capture_overwrite`/`discard_pending_capture`.
+    pub pending_capture: Mutex<Option<Vec<TrackSnapshot>>>,
+    /// Whether minimizing the main window hides it to the tray instead of
+    /// the taskbar.
+    pub minimize_to_tray: Mutex<bool>,
+    /// Whether closing the main window hides it to the tray instead of
+    /// quitting the app.
+    pub close_to_tray: Mutex<bool>,
+    /// Per-device default volume (linear multiplier), applied to a channel's
+    /// edit params the moment a new snapshot is captured for it. Absent
+    /// entries default to unity gain (1.0) on the frontend.
+    pub default_volumes: Mutex<HashMap<String, f32>>,
 }
 
 impl Default for AppState {
@@ -53,9 +70,13 @@ impl Default for AppState {
             buffers: Mutex::new(HashMap::new()),
             formats: Mutex::new(HashMap::new()),
             last_snapshot: Mutex::new(HashMap::new()),
-            current_hotkey: Mutex::new(hotkey::DEFAULT_HOTKEY.to_string()),
+            hotkeys: Mutex::new(hotkey::default_hotkeys()),
             buffer_duration_secs: Mutex::new(DEFAULT_BUFFER_DURATION_SECS),
             capture_status: Mutex::new(CaptureStatus::Idle),
+            pending_capture: Mutex::new(None),
+            minimize_to_tray: Mutex::new(true),
+            close_to_tray: Mutex::new(true),
+            default_volumes: Mutex::new(HashMap::new()),
         }
     }
 }

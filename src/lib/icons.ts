@@ -8,4 +8,4 @@
 export const PLAY_ICON = "⏵︎";
 export const PAUSE_ICON = "⏸︎";
 export const STOP_ICON = "⏹︎";
-export const GEAR_ICON = "⚙︎";
+export const MENU_ICON = "☰︎";

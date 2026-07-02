@@ -1,62 +1,231 @@
 import { useEffect, useState } from "react";
-import { getBufferDuration, getHotkey, setBufferDuration, updateHotkey } from "../lib/commands";
+import {
+  getBufferDuration,
+  getGeneralSettings,
+  getHotkeys,
+  setBufferDuration,
+  setCloseToTray,
+  setMinimizeToTray,
+  updateHotkey,
+} from "../lib/commands";
 import { acceleratorFromKeyboardEvent } from "../lib/hotkeyRecorder";
-import type { ChannelInfo } from "../types/audio";
-import { ChannelList } from "./ChannelList";
+import type { ChannelInfo, HotkeyAction } from "../types/audio";
+import { AccordionSection } from "./AccordionSection";
+import { CompactVolumeControl } from "./CompactVolumeControl";
 
 interface SettingsProps {
   onClose: () => void;
   channels: ChannelInfo[];
   activeIds: Set<string>;
   onToggleChannel: (id: string) => void;
+  defaultVolumes: Record<string, number>;
+  onDefaultVolumeChange: (channelId: string, volume: number) => void;
 }
 
-export function Settings({ onClose, channels, activeIds, onToggleChannel }: SettingsProps) {
-  const [currentHotkey, setCurrentHotkey] = useState("");
-  const [recording, setRecording] = useState(false);
-  const [pendingHotkey, setPendingHotkey] = useState<string | null>(null);
-  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
-  const [savingHotkey, setSavingHotkey] = useState(false);
+const HOTKEY_ACTIONS: { id: HotkeyAction; label: string }[] = [
+  { id: "captureSnip", label: "Capture Snip" },
+  { id: "showApp", label: "Show App" },
+  { id: "resetBuffer", label: "Reset Buffer" },
+];
+
+interface HotkeyRowProps {
+  label: string;
+  boundValue: string;
+  pendingValue: string | undefined;
+  isRecording: boolean;
+  onStartRecording: () => void;
+  onSave: () => void;
+  onClear: () => void;
+  saving: boolean;
+  error?: string;
+}
+
+function HotkeyRow({
+  label,
+  boundValue,
+  pendingValue,
+  isRecording,
+  onStartRecording,
+  onSave,
+  onClear,
+  saving,
+  error,
+}: HotkeyRowProps) {
+  const displayValue = pendingValue !== undefined ? pendingValue : boundValue;
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs text-neutral-400">{label}</span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onStartRecording}
+          className="flex-1 rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-left text-sm text-neutral-100"
+        >
+          {isRecording ? "Press a key combination..." : displayValue || "Not set"}
+        </button>
+        {boundValue && pendingValue === undefined && (
+          <button
+            type="button"
+            onClick={onClear}
+            title="Clear"
+            className="text-xs text-neutral-400 hover:text-neutral-100"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      {error && <span className="text-xs text-red-400">{error}</span>}
+      {pendingValue !== undefined && (
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+          className="self-start rounded bg-cyan-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-40"
+        >
+          {saving ? "Saving..." : "Save"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+interface DeviceGroupProps {
+  label: string;
+  devices: ChannelInfo[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  activeIds: Set<string>;
+  onToggleChannel: (id: string) => void;
+  defaultVolumes: Record<string, number>;
+  onDefaultVolumeChange: (channelId: string, volume: number) => void;
+}
+
+function DeviceGroup({
+  label,
+  devices,
+  open,
+  onOpenChange,
+  activeIds,
+  onToggleChannel,
+  defaultVolumes,
+  onDefaultVolumeChange,
+}: DeviceGroupProps) {
+  return (
+    <AccordionSection label={label} open={open} onOpenChange={onOpenChange}>
+      <div className="flex flex-col gap-3 pt-1">
+        {devices.length === 0 && <span className="text-xs text-neutral-500">No devices found.</span>}
+
+        {devices.length > 0 && (
+          <div className="flex items-center gap-3">
+            <span className="w-8 shrink-0 text-center text-[10px] uppercase tracking-wide text-neutral-500">
+              Enable
+            </span>
+          </div>
+        )}
+
+        {devices.map((device) => (
+          <div
+            key={device.id}
+            className="flex items-start gap-3 border-b border-neutral-800/60 pb-3 last:border-b-0 last:pb-0"
+          >
+            <div className="flex w-8 shrink-0 justify-center pt-1">
+              <input
+                type="checkbox"
+                checked={activeIds.has(device.id)}
+                onChange={() => onToggleChannel(device.id)}
+              />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <span className="truncate text-sm text-neutral-200">{device.name}</span>
+              <span className="text-xs text-neutral-400">Default Volume</span>
+              <CompactVolumeControl
+                volume={defaultVolumes[device.id] ?? 1}
+                onVolumeChange={(volume) => onDefaultVolumeChange(device.id, volume)}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </AccordionSection>
+  );
+}
+
+export function Settings({
+  onClose,
+  channels,
+  activeIds,
+  onToggleChannel,
+  defaultVolumes,
+  onDefaultVolumeChange,
+}: SettingsProps) {
+  const [tab, setTab] = useState<"general" | "hotkeys" | "sources">("general");
+
+  const [hotkeys, setHotkeys] = useState<Partial<Record<HotkeyAction, string>>>({});
+  const [recordingAction, setRecordingAction] = useState<HotkeyAction | null>(null);
+  const [pendingHotkeys, setPendingHotkeys] = useState<Partial<Record<HotkeyAction, string>>>({});
+  const [hotkeyErrors, setHotkeyErrors] = useState<Partial<Record<HotkeyAction, string>>>({});
+  const [savingAction, setSavingAction] = useState<HotkeyAction | null>(null);
 
   const [durationInput, setDurationInput] = useState("30");
   const [durationError, setDurationError] = useState<string | null>(null);
   const [savingDuration, setSavingDuration] = useState(false);
 
+  const [minimizeToTray, setMinimizeToTrayState] = useState(true);
+  const [closeToTray, setCloseToTrayState] = useState(true);
+
+  const [inputsOpen, setInputsOpen] = useState(true);
+  const [outputsOpen, setOutputsOpen] = useState(true);
+
   useEffect(() => {
-    getHotkey().then(setCurrentHotkey).catch(console.error);
+    getHotkeys().then(setHotkeys).catch(console.error);
     getBufferDuration()
       .then((seconds) => setDurationInput(String(seconds)))
+      .catch(console.error);
+    getGeneralSettings()
+      .then((settings) => {
+        setMinimizeToTrayState(settings.minimizeToTray);
+        setCloseToTrayState(settings.closeToTray);
+      })
       .catch(console.error);
   }, []);
 
   useEffect(() => {
-    if (!recording) return;
+    if (!recordingAction) return;
 
     function onKeyDown(event: KeyboardEvent) {
       event.preventDefault();
       const accelerator = acceleratorFromKeyboardEvent(event);
-      if (!accelerator) return;
-      setPendingHotkey(accelerator);
-      setRecording(false);
+      if (!accelerator || !recordingAction) return;
+      setPendingHotkeys((prev) => ({ ...prev, [recordingAction]: accelerator }));
+      setRecordingAction(null);
     }
 
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [recording]);
+  }, [recordingAction]);
 
-  async function handleSaveHotkey() {
-    if (!pendingHotkey) return;
-    setSavingHotkey(true);
-    setHotkeyError(null);
+  async function handleSaveHotkey(action: HotkeyAction) {
+    const pending = pendingHotkeys[action];
+    if (pending === undefined) return;
+    setSavingAction(action);
+    setHotkeyErrors((prev) => ({ ...prev, [action]: undefined }));
     try {
-      await updateHotkey(pendingHotkey);
-      setCurrentHotkey(pendingHotkey);
-      setPendingHotkey(null);
+      await updateHotkey(action, pending);
+      setHotkeys((prev) => ({ ...prev, [action]: pending }));
+      setPendingHotkeys((prev) => {
+        const next = { ...prev };
+        delete next[action];
+        return next;
+      });
     } catch (err) {
-      setHotkeyError(String(err));
+      setHotkeyErrors((prev) => ({ ...prev, [action]: String(err) }));
     } finally {
-      setSavingHotkey(false);
+      setSavingAction(null);
     }
+  }
+
+  function handleClearHotkey(action: HotkeyAction) {
+    setPendingHotkeys((prev) => ({ ...prev, [action]: "" }));
   }
 
   async function handleSaveDuration() {
@@ -77,73 +246,165 @@ export function Settings({ onClose, channels, activeIds, onToggleChannel }: Sett
     }
   }
 
+  async function handleMinimizeToTrayChange(enabled: boolean) {
+    setMinimizeToTrayState(enabled);
+    try {
+      await setMinimizeToTray(enabled);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function handleCloseToTrayChange(enabled: boolean) {
+    setCloseToTrayState(enabled);
+    try {
+      await setCloseToTray(enabled);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  const inputs = channels.filter((channel) => channel.kind === "input");
+  const outputs = channels.filter((channel) => channel.kind === "output");
+
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-black/60">
-      <div className="flex max-h-[80vh] w-96 flex-col gap-4 overflow-y-auto rounded-lg bg-neutral-900 p-4 text-neutral-100">
-        <div className="flex items-center justify-between">
+      <div className="flex max-h-[85vh] w-[30rem] flex-col gap-4 overflow-hidden rounded-lg bg-neutral-900 text-neutral-100">
+        <div className="flex items-center justify-between p-4 pb-0">
           <h2 className="text-base font-semibold">Settings</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-neutral-400 hover:text-neutral-100"
-          >
+          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-neutral-100">
             &times;
           </button>
         </div>
 
-        <div className="flex flex-col gap-2">
-          <span className="text-xs text-neutral-400">Clip capture hotkey</span>
+        <div className="flex gap-1 border-b border-neutral-800 px-4">
           <button
             type="button"
-            onClick={() => {
-              setRecording(true);
-              setPendingHotkey(null);
-              setHotkeyError(null);
-            }}
-            className="rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-left text-sm"
+            onClick={() => setTab("general")}
+            className={
+              tab === "general"
+                ? "border-b-2 border-violet-500 px-3 py-2 text-sm font-medium text-neutral-100"
+                : "border-b-2 border-transparent px-3 py-2 text-sm text-neutral-400 hover:text-neutral-200"
+            }
           >
-            {recording ? "Press a key combination..." : (pendingHotkey ?? currentHotkey) || "Not set"}
+            General
           </button>
+          <button
+            type="button"
+            onClick={() => setTab("hotkeys")}
+            className={
+              tab === "hotkeys"
+                ? "border-b-2 border-violet-500 px-3 py-2 text-sm font-medium text-neutral-100"
+                : "border-b-2 border-transparent px-3 py-2 text-sm text-neutral-400 hover:text-neutral-200"
+            }
+          >
+            Hotkeys
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("sources")}
+            className={
+              tab === "sources"
+                ? "border-b-2 border-violet-500 px-3 py-2 text-sm font-medium text-neutral-100"
+                : "border-b-2 border-transparent px-3 py-2 text-sm text-neutral-400 hover:text-neutral-200"
+            }
+          >
+            Audio Sources
+          </button>
+        </div>
 
-          {hotkeyError && <span className="text-xs text-red-400">{hotkeyError}</span>}
+        <div className="flex flex-col gap-4 overflow-y-auto px-4 pb-4">
+          {tab === "general" ? (
+            <>
+              <label className="flex items-center justify-between text-sm text-neutral-200">
+                Minimize to tray
+                <input
+                  type="checkbox"
+                  checked={minimizeToTray}
+                  onChange={(e) => handleMinimizeToTrayChange(e.target.checked)}
+                />
+              </label>
 
-          {pendingHotkey && (
-            <button
-              type="button"
-              onClick={handleSaveHotkey}
-              disabled={savingHotkey}
-              className="self-start rounded bg-cyan-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-40"
-            >
-              {savingHotkey ? "Saving..." : "Save"}
-            </button>
+              <label className="flex items-center justify-between text-sm text-neutral-200">
+                Close to tray
+                <input
+                  type="checkbox"
+                  checked={closeToTray}
+                  onChange={(e) => handleCloseToTrayChange(e.target.checked)}
+                />
+              </label>
+
+              <div className="flex flex-col gap-2 border-t border-neutral-800 pt-3">
+                <span className="text-xs text-neutral-400">Buffer Duration</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={durationInput}
+                  onChange={(e) => setDurationInput(e.target.value)}
+                  className="rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
+                />
+
+                {durationError && <span className="text-xs text-red-400">{durationError}</span>}
+
+                <button
+                  type="button"
+                  onClick={handleSaveDuration}
+                  disabled={savingDuration}
+                  className="self-start rounded bg-cyan-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-40"
+                >
+                  {savingDuration ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </>
+          ) : tab === "hotkeys" ? (
+            <div className="flex flex-col gap-4">
+              {HOTKEY_ACTIONS.map(({ id, label }) => (
+                <HotkeyRow
+                  key={id}
+                  label={label}
+                  boundValue={hotkeys[id] ?? ""}
+                  pendingValue={pendingHotkeys[id]}
+                  isRecording={recordingAction === id}
+                  onStartRecording={() => {
+                    setRecordingAction(id);
+                    setPendingHotkeys((prev) => {
+                      const next = { ...prev };
+                      delete next[id];
+                      return next;
+                    });
+                    setHotkeyErrors((prev) => ({ ...prev, [id]: undefined }));
+                  }}
+                  onSave={() => handleSaveHotkey(id)}
+                  onClear={() => handleClearHotkey(id)}
+                  saving={savingAction === id}
+                  error={hotkeyErrors[id]}
+                />
+              ))}
+            </div>
+          ) : (
+            <>
+              <DeviceGroup
+                label="Inputs"
+                devices={inputs}
+                open={inputsOpen}
+                onOpenChange={setInputsOpen}
+                activeIds={activeIds}
+                onToggleChannel={onToggleChannel}
+                defaultVolumes={defaultVolumes}
+                onDefaultVolumeChange={onDefaultVolumeChange}
+              />
+              <DeviceGroup
+                label="Outputs"
+                devices={outputs}
+                open={outputsOpen}
+                onOpenChange={setOutputsOpen}
+                activeIds={activeIds}
+                onToggleChannel={onToggleChannel}
+                defaultVolumes={defaultVolumes}
+                onDefaultVolumeChange={onDefaultVolumeChange}
+              />
+            </>
           )}
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <span className="text-xs text-neutral-400">Rolling buffer duration (seconds)</span>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={durationInput}
-            onChange={(e) => setDurationInput(e.target.value)}
-            className="rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
-          />
-
-          {durationError && <span className="text-xs text-red-400">{durationError}</span>}
-
-          <button
-            type="button"
-            onClick={handleSaveDuration}
-            disabled={savingDuration}
-            className="self-start rounded bg-cyan-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-40"
-          >
-            {savingDuration ? "Saving..." : "Save"}
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <span className="text-xs text-neutral-400">Audio devices</span>
-          <ChannelList channels={channels} activeIds={activeIds} onToggle={onToggleChannel} />
         </div>
       </div>
     </div>

@@ -16,6 +16,7 @@ export type CaptureStatus =
   | { status: "idle" }
   | { status: "processing" }
   | { status: "ready"; snapshot: TrackSnapshot[] }
+  | { status: "conflict"; snapshot: TrackSnapshot[] }
   | { status: "failed"; message: string };
 
 export interface TrackEditParams {
@@ -31,10 +32,10 @@ export interface TrackEditParams {
   scrubOffsetMs: number;
 }
 
-export function defaultEditParams(channelId: string): TrackEditParams {
+export function defaultEditParams(channelId: string, volume = 1): TrackEditParams {
   return {
     channelId,
-    volume: 1,
+    volume,
     trimStartMs: 0,
     trimEndMs: 0,
     fadeInMs: 0,
@@ -42,3 +43,12 @@ export function defaultEditParams(channelId: string): TrackEditParams {
     scrubOffsetMs: 0,
   };
 }
+
+/** Mirrors Rust's `GeneralSettings`. */
+export interface GeneralSettings {
+  minimizeToTray: boolean;
+  closeToTray: boolean;
+}
+
+/** The 3 named hotkey action ids the backend understands (see `hotkey.rs`). */
+export type HotkeyAction = "captureSnip" | "showApp" | "resetBuffer";

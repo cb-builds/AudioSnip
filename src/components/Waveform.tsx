@@ -3,21 +3,49 @@ import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent }
 import { computeVisualPeaks, scalePeaks, VISUAL_PEAK_POINTS } from "../lib/audioMixMath";
 import type { TrackEditParams } from "../types/audio";
 
+/**
+ * One track's waveform drawn as a layer inside the Master overlay (see
+ * `WaveformProps.overlayLayers`) - each layer is fully independent (its own
+ * peaks, its own position on the shared timeline), so shifting one via
+ * scrub is just changing `offsetMs` and redrawing, never recomputing any
+ * audio data.
+ */
+export interface OverlayLayer {
+  channelId: string;
+  /** This layer's own downsampled peaks (see `useTrackPeaksCache`) - already reflects its own trim/fade/volume, but not Master's. */
+  peaks: Float32Array;
+  color: string;
+  /** This layer's opacity within Master's trim window (0-1) - outside the trim window it's dimmed further, proportionally. */
+  alpha: number;
+  /** Where this layer begins on the shared timeline, in ms. */
+  offsetMs: number;
+  /** This layer's own trimmed duration, in ms. */
+  durationMs: number;
+}
+
 interface WaveformProps {
-  /** Plain arrays come from captured snapshots; `Float32Array` from the computed Master Mix. */
+  /** Single-layer mode (individual tracks): plain arrays from captured snapshots. */
   samples?: number[] | Float32Array;
   channels?: number;
   sampleRate?: number;
   /**
-   * Precomputed min/max peaks (see `computeVisualPeaks`), e.g. from the
-   * mixer worker. When provided, drawing skips scanning `samples` entirely -
-   * only used for duration math. When omitted, peaks are computed from
-   * `samples` here, memoized so that only stays cheap while `samples`
-   * itself doesn't change.
+   * Precomputed min/max peaks (see `computeVisualPeaks`). When provided,
+   * drawing skips scanning `samples` entirely. When omitted, peaks are
+   * computed from `samples` here, memoized so that only stays cheap while
+   * `samples` itself doesn't change.
    */
   peaks?: Float32Array;
   /** Linear gain applied to whichever peaks are drawn (prop or computed) - cheap enough to apply on every change instantly. */
   visualGain?: number;
+  /**
+   * Multi-layer overlay mode (Master): draws every active track's own
+   * waveform layered on top of each other with semi-transparent colors,
+   * instead of a single pre-mixed buffer. When provided, `samples`/`peaks`
+   * are ignored.
+   */
+  overlayLayers?: OverlayLayer[];
+  /** Required in overlay mode - the shared timeline's total duration in ms, since there's no single underlying buffer to derive it from. */
+  overlayDurationMs?: number;
   trimStartMs: number;
   /** 0 means "trim nothing off the end". */
   trimEndMs: number;
@@ -29,14 +57,16 @@ interface WaveformProps {
 }
 
 const HANDLE_HIT_PX = 8;
-/** Active (in-trim) waveform peaks: clean cyan/blue. */
-const WAVEFORM_ACTIVE_COLOR = "#22d3ee";
-/** Trimmed-out waveform peaks: desaturated gray. */
+/** Active (in-trim) waveform peaks: clean cyan/blue (single-layer mode) - also the Master overlay's uniform color when the Scrub panel is collapsed. */
+export const WAVEFORM_ACTIVE_COLOR = "#22d3ee";
+/** Trimmed-out waveform peaks: desaturated gray (single-layer mode). */
 const WAVEFORM_TRIMMED_COLOR = "#6b7280";
 /** Trim drag handles: thin, solid purple. */
 const TRIM_HANDLE_COLOR = "#8b5cf6";
 /** Playhead: a lighter purple, distinct from the trim handles' shade. */
 const PLAYHEAD_COLOR = "#c084fc";
+/** An overlay layer's opacity outside Master's trim window, as a fraction of its own in-trim alpha - dimmer, matching the single-layer gray-out convention, whatever the layer's base alpha is. */
+const LAYER_OUT_OF_TRIM_DIM_FACTOR = 0.4;
 
 function pickTickIntervalSeconds(durationSeconds: number): number {
   if (durationSeconds <= 10) return 1;
@@ -58,6 +88,8 @@ export function Waveform({
   sampleRate = 0,
   peaks: peaksProp,
   visualGain = 1,
+  overlayLayers,
+  overlayDurationMs,
   trimStartMs,
   trimEndMs,
   onTrimChange,
@@ -68,25 +100,28 @@ export function Waveform({
   const rulerCanvasRef = useRef<HTMLCanvasElement>(null);
   const [dragging, setDragging] = useState<"start" | "end" | null>(null);
 
+  const isOverlayMode = Boolean(overlayLayers);
   const totalFrames = samples ? Math.floor(samples.length / Math.max(1, channels)) : 0;
-  const durationMs = sampleRate > 0 ? (totalFrames / sampleRate) * 1000 : 0;
+  const singleLayerDurationMs = sampleRate > 0 ? (totalFrames / sampleRate) * 1000 : 0;
+  const durationMs = isOverlayMode ? (overlayDurationMs ?? 0) : singleLayerDurationMs;
   const effectiveTrimEndMs = trimEndMs === 0 ? durationMs : Math.min(trimEndMs, durationMs);
 
   // Expensive: only recomputed when the underlying raw samples actually
-  // change, never on a volume tick. Skipped entirely if the caller already
-  // supplies precomputed peaks (e.g. the Master Mix, from the worker).
+  // change, never on a volume tick. Skipped entirely in overlay mode, or if
+  // the caller already supplies precomputed peaks.
   const basePeaks = useMemo(() => {
-    if (peaksProp || !samples || samples.length === 0) return null;
+    if (isOverlayMode || peaksProp || !samples || samples.length === 0) return null;
     return computeVisualPeaks(samples, VISUAL_PEAK_POINTS);
-  }, [peaksProp, samples]);
+  }, [isOverlayMode, peaksProp, samples]);
 
   // Cheap: applying a linear gain to ~1000 points is instant, so this can
   // safely re-run on every volume change without any drawing lag.
   const displayPeaks = useMemo(() => {
+    if (isOverlayMode) return null;
     const base = peaksProp ?? basePeaks;
     if (!base) return null;
     return scalePeaks(base, visualGain);
-  }, [peaksProp, basePeaks, visualGain]);
+  }, [isOverlayMode, peaksProp, basePeaks, visualGain]);
 
   function msToX(ms: number, width: number) {
     if (durationMs <= 0) return 0;
@@ -112,7 +147,52 @@ export function Waveform({
     const startX = durationMs > 0 ? msToX(trimStartMs, width) : 0;
     const endX = durationMs > 0 ? msToX(effectiveTrimEndMs, width) : width;
 
-    if (displayPeaks && displayPeaks.length > 0) {
+    if (overlayLayers && overlayLayers.length > 0) {
+      // Each layer is an independent track's own waveform, drawn
+      // semi-transparently at its own position on the shared timeline -
+      // overlapping layers blend visually instead of ever being summed
+      // into actual audio data. Shifting a layer (scrub) only changes
+      // `offsetMs`, so this whole block is just redrawing, never
+      // recomputing peaks.
+      ctx.lineWidth = 1;
+      for (const layer of overlayLayers) {
+        if (layer.peaks.length === 0 || layer.durationMs <= 0) continue;
+
+        const layerStartX = msToX(layer.offsetMs, width);
+        const layerEndX = msToX(layer.offsetMs + layer.durationMs, width);
+        const layerPixelWidth = Math.max(1, layerEndX - layerStartX);
+        const pointCount = layer.peaks.length / 2;
+
+        const xStart = Math.max(0, Math.floor(layerStartX));
+        const xEnd = Math.min(width, Math.ceil(layerEndX));
+
+        let currentAlpha: number | null = null;
+        for (let x = xStart; x < xEnd; x++) {
+          const inTrim = x >= startX && x <= endX;
+          const alpha = inTrim ? layer.alpha : layer.alpha * LAYER_OUT_OF_TRIM_DIM_FACTOR;
+          if (alpha !== currentAlpha) {
+            if (currentAlpha !== null) ctx.stroke();
+            ctx.beginPath();
+            ctx.strokeStyle = layer.color;
+            ctx.globalAlpha = alpha;
+            currentAlpha = alpha;
+          }
+
+          const layerRelativeX = x - layerStartX;
+          const pointIndex = Math.min(
+            pointCount - 1,
+            Math.max(0, Math.floor((layerRelativeX / layerPixelWidth) * pointCount)),
+          );
+          const min = layer.peaks[pointIndex * 2];
+          const max = layer.peaks[pointIndex * 2 + 1];
+
+          ctx.moveTo(x + 0.5, midY + min * midY);
+          ctx.lineTo(x + 0.5, midY + max * midY);
+        }
+        if (currentAlpha !== null) ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    } else if (displayPeaks && displayPeaks.length > 0) {
       ctx.lineWidth = 1;
 
       // displayPeaks is a fixed-size (VISUAL_PEAK_POINTS) array regardless
@@ -159,7 +239,7 @@ export function Waveform({
         ctx.fillRect(playheadX - 1, 0, 2, height);
       }
     }
-  }, [displayPeaks, trimStartMs, effectiveTrimEndMs, durationMs, playbackPositionSeconds]);
+  }, [displayPeaks, overlayLayers, trimStartMs, effectiveTrimEndMs, durationMs, playbackPositionSeconds]);
 
   // Ruler: tick marks scaled to the snapshot's true duration (not the
   // configured rolling-buffer maximum).

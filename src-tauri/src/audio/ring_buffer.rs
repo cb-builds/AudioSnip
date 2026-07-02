@@ -73,6 +73,14 @@ impl RollingBuffer {
         self.snapshot(self.capacity)
     }
 
+    /// How many real samples are currently available to read (i.e. how much
+    /// has actually been written so far, capped at `capacity`) - lets a
+    /// caller learn how much real history exists without copying it out via
+    /// `snapshot_all`.
+    pub fn available_len(&self) -> usize {
+        self.write_pos.load(Ordering::Acquire).min(self.capacity)
+    }
+
     /// Immediately discards all buffered audio by resetting the write
     /// cursor to zero. The underlying slots aren't zeroed - there's no need
     /// to, since `snapshot`/`snapshot_all` only ever read up to the current

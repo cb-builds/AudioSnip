@@ -1,32 +1,18 @@
 import { useEffect, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, ReactNode } from "react";
 import { MAX_GAIN_DB, MIN_GAIN_DB } from "../lib/audioMixMath";
+import { clampDb, dbToVolume, formatDb, volumeToDb } from "../lib/dbConversion";
 import { maskDecimalKeyDown, SIGNED_DECIMAL_PATTERN } from "../lib/decimalMask";
 
 interface VolumeFaderProps {
   /** Linear multiplier (1.0 = unity gain). */
   volume: number;
   onVolumeChange: (volume: number) => void;
-  onAmplify: () => void;
+  /** Omit to hide the Amplify button entirely - e.g. Settings' "Default Volume" presets have no live audio peak to amplify against. */
+  onAmplify?: () => void;
   disabled?: boolean;
   /** Rendered immediately to the left of the slider - e.g. a per-track "enabled" checkbox in the Master's Source Volume Levels list. */
   leading?: ReactNode;
-}
-
-function volumeToDb(volume: number): number {
-  return volume > 0 ? 20 * Math.log10(volume) : MIN_GAIN_DB;
-}
-
-function dbToVolume(db: number): number {
-  return 10 ** (db / 20);
-}
-
-function clampDb(db: number): number {
-  return Math.max(MIN_GAIN_DB, Math.min(MAX_GAIN_DB, db));
-}
-
-function formatDb(volume: number): string {
-  return clampDb(volumeToDb(volume)).toFixed(2);
 }
 
 /**
@@ -91,14 +77,16 @@ export function VolumeFader({ volume, onVolumeChange, onAmplify, disabled, leadi
         />
       </div>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onAmplify}
-          disabled={disabled}
-          className="rounded bg-gradient-to-br from-blue-600 to-violet-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-40"
-        >
-          Amplify
-        </button>
+        {onAmplify && (
+          <button
+            type="button"
+            onClick={onAmplify}
+            disabled={disabled}
+            className="rounded bg-gradient-to-br from-blue-600 to-violet-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-40"
+          >
+            Amplify
+          </button>
+        )}
         <label className="flex items-center gap-1 text-xs text-neutral-400">
           <input
             type="text"

@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -10,6 +10,7 @@ use crate::audio::encoder;
 use crate::audio::mixer::{self, TrackEditParams};
 use crate::audio::ring_buffer::RollingBuffer;
 use crate::hotkey;
+use crate::settings_store;
 use crate::state::AppState;
 
 /// Sizing heuristic for the rolling buffer: assumes stereo audio at a common
@@ -45,6 +46,16 @@ pub(crate) fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// `RwLock` equivalent of [`lock_or_recover`], for `active_channels`.
 fn write_or_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(|poisoned| {
+        eprintln!(
+            "[commands] recovered from a poisoned RwLock (a prior operation panicked while holding it) - continuing with the existing data"
+        );
+        poisoned.into_inner()
+    })
+}
+
+/// Read-only counterpart of [`write_or_recover`].
+pub(crate) fn read_or_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|poisoned| {
         eprintln!(
             "[commands] recovered from a poisoned RwLock (a prior operation panicked while holding it) - continuing with the existing data"
         );
@@ -132,6 +143,12 @@ pub enum CaptureStatus {
     /// the backend's stored status back to `Idle`, so a slow poller can't
     /// see (or re-load) the same finished capture twice.
     Ready { snapshot: Vec<TrackSnapshot> },
+    /// A clip was already loaded when this capture ran - `snapshot` is also
+    /// staged in `AppState.pending_capture` so the frontend's own themed
+    /// confirmation modal can decide whether to commit it (see
+    /// `confirm_capture_overwrite`/`discard_pending_capture`). Consumed once,
+    /// like `Ready`.
+    Conflict { snapshot: Vec<TrackSnapshot> },
     /// The capture panicked or otherwise failed - also consumed once, like `Ready`.
     Failed { message: String },
 }
@@ -144,14 +161,20 @@ pub enum CaptureStatus {
 /// sink the whole capture, and critically, the panic never reaches past this
 /// point to poison the `buffers`/`formats` locks the caller is still
 /// holding.
+///
+/// `duration_secs` is a real (not necessarily whole-number) duration - see
+/// `snapshot_active_channels`, which computes it dynamically as "how much
+/// audio has actually been recorded so far" rather than always the
+/// configured buffer maximum, so a snip taken shortly after opening the app
+/// (or resetting the buffer) reflects its true, shorter length.
 fn extract_channel_snapshot(
     buffer: &RollingBuffer,
     channel_count: usize,
     sample_rate: u32,
-    duration_secs: u32,
+    duration_secs: f64,
 ) -> Vec<f32> {
     let mut samples = buffer.snapshot_all();
-    let target_frames = ((duration_secs as f64) * (sample_rate as f64)).round().max(0.0) as usize;
+    let target_frames = (duration_secs * (sample_rate as f64)).round().max(0.0) as usize;
     let available_frames = samples.len() / channel_count.max(1);
 
     if available_frames < target_frames {
@@ -177,19 +200,15 @@ fn extract_channel_snapshot(
 }
 
 /// Takes a non-destructive snapshot of every active channel's rolling
-/// buffer, strictly aligned to the exact same real-world window: the
-/// configured buffer duration ending at this very instant (i.e.
-/// `[now - buffer_duration_secs, now]`). Every returned track therefore has
-/// exactly `buffer_duration_secs * its own sample_rate` frames - if a
-/// channel doesn't have that much real history yet (it started capturing
-/// recently), its front is padded with silence; if it somehow has more
-/// (its buffer's actual capacity in time exceeds the configured duration),
-/// the oldest excess is dropped. This guarantees every channel's clip is
-/// the same length and locked to the same end instant, with no drift.
-///
-/// Also caches a copy in `AppState.last_snapshot` so `export_clip` later
-/// reuses exactly what the user saw/edited instead of whatever the live
-/// buffer has moved on to by export time.
+/// buffer, aligned to the same real-world window ending at this very
+/// instant. The window's length is dynamic, not always the configured
+/// buffer maximum: it's the *actual* amount of audio recorded so far (across
+/// every active channel, capped at `buffer_duration_secs`), so a snip taken
+/// shortly after opening the app or resetting the buffer reflects its true,
+/// shorter length instead of always spanning the full configured duration.
+/// Every channel is padded/trimmed to that same effective length so every
+/// returned track stays the same size and locked to the same end instant,
+/// with no drift.
 ///
 /// This is a plain function (not a `#[tauri::command]`) so both the
 /// `capture_snapshot` command (frontend-invoked) and the global hotkey
@@ -203,7 +222,12 @@ fn extract_channel_snapshot(
 /// the whole capture, so this function always returns and the caller can
 /// always broadcast a result to the frontend - it never hangs and never
 /// leaves a lock poisoned for the next call.
-pub fn snapshot_active_channels(state: &AppState) -> Vec<TrackSnapshot> {
+///
+/// Does *not* cache the result into `AppState.last_snapshot` - see
+/// `commit_snapshot`, called separately so a caller (namely
+/// `hotkey::trigger_capture`'s overwrite-confirmation flow) can hold a
+/// snapshot in memory and decide later whether to actually commit it.
+pub fn snapshot_active_channels_uncached(state: &AppState) -> Vec<TrackSnapshot> {
     println!("[capture] snapshot_active_channels: acquiring buffers lock...");
     let buffers = lock_or_recover(&state.buffers);
     println!(
@@ -215,8 +239,27 @@ pub fn snapshot_active_channels(state: &AppState) -> Vec<TrackSnapshot> {
     let formats = lock_or_recover(&state.formats);
     println!("[capture] snapshot_active_channels: formats lock acquired");
 
-    let duration_secs = *lock_or_recover(&state.buffer_duration_secs);
-    println!("[capture] snapshot_active_channels: buffer_duration_secs = {duration_secs}");
+    let configured_duration_secs = *lock_or_recover(&state.buffer_duration_secs);
+
+    // How much real audio has actually accumulated so far, across every
+    // active channel - the longest of them sets the effective window length
+    // (still capped at the configured maximum), so a channel that's been
+    // recording longer than another doesn't get truncated down to the
+    // newer one's shorter history.
+    let mut max_available_secs = 0.0_f64;
+    for (channel_id, buffer) in buffers.iter() {
+        let format = formats.get(channel_id).copied();
+        let sample_rate = format.map(|f| f.sample_rate).unwrap_or(mixer::TARGET_SAMPLE_RATE);
+        let channels = format.map(|f| f.channels).unwrap_or(1);
+        let channel_count = (channels as usize).max(1);
+        let available_secs =
+            buffer.available_len() as f64 / channel_count as f64 / (sample_rate.max(1) as f64);
+        max_available_secs = max_available_secs.max(available_secs);
+    }
+    let duration_secs = max_available_secs.min(configured_duration_secs as f64);
+    println!(
+        "[capture] snapshot_active_channels: effective duration = {duration_secs:.3}s (configured max = {configured_duration_secs}s)"
+    );
 
     let snapshot: Vec<TrackSnapshot> = buffers
         .iter()
@@ -244,8 +287,7 @@ pub fn snapshot_active_channels(state: &AppState) -> Vec<TrackSnapshot> {
                     eprintln!(
                         "[capture] channel '{channel_id}': extraction panicked ({message}) - falling back to a silent clip so the overall capture still completes"
                     );
-                    let target_frames =
-                        ((duration_secs as f64) * (sample_rate as f64)).round().max(0.0) as usize;
+                    let target_frames = (duration_secs * (sample_rate as f64)).round().max(0.0) as usize;
                     vec![0.0_f32; target_frames * channel_count]
                 }
             };
@@ -263,17 +305,33 @@ pub fn snapshot_active_channels(state: &AppState) -> Vec<TrackSnapshot> {
     drop(formats);
     println!("[capture] snapshot_active_channels: buffers/formats locks released");
 
-    println!("[capture] snapshot_active_channels: acquiring last_snapshot lock to cache results...");
-    let mut last_snapshot = lock_or_recover(&state.last_snapshot);
-    for track in &snapshot {
-        last_snapshot.insert(track.channel_id.clone(), track.samples.clone());
-    }
-    drop(last_snapshot);
-
     println!(
         "[capture] snapshot_active_channels: done - {} channel(s) captured, ready to broadcast",
         snapshot.len()
     );
+    snapshot
+}
+
+/// Writes `snapshot` into `AppState.last_snapshot`, so `export_clip` later
+/// reuses exactly what the user saw/edited instead of whatever the live
+/// buffer has moved on to by export time. Split out from
+/// `snapshot_active_channels_uncached` so a caller can inspect/hold a
+/// snapshot before deciding whether it should actually replace what's
+/// currently loaded (see `hotkey::trigger_capture`'s overwrite confirmation).
+pub fn commit_snapshot(state: &AppState, snapshot: &[TrackSnapshot]) {
+    let mut last_snapshot = lock_or_recover(&state.last_snapshot);
+    for track in snapshot {
+        last_snapshot.insert(track.channel_id.clone(), track.samples.clone());
+    }
+}
+
+/// Convenience wrapper used by the `capture_snapshot` command: takes a
+/// snapshot and immediately commits it, with no overwrite confirmation -
+/// that gating only applies to the hotkey/tray/button capture flow (see
+/// `hotkey::trigger_capture`), not this direct, synchronous command.
+pub fn snapshot_active_channels(state: &AppState) -> Vec<TrackSnapshot> {
+    let snapshot = snapshot_active_channels_uncached(state);
+    commit_snapshot(state, &snapshot);
     snapshot
 }
 
@@ -283,7 +341,7 @@ pub fn list_channels(state: State<AppState>) -> Vec<ChannelInfo> {
 }
 
 #[tauri::command]
-pub fn start_capture(state: State<AppState>, channel_id: String) -> Result<(), String> {
+pub fn start_capture(app: AppHandle, state: State<AppState>, channel_id: String) -> Result<(), String> {
     let duration_secs = *lock_or_recover(&state.buffer_duration_secs);
     let buffer = RollingBuffer::new(capacity_for_duration(duration_secs));
 
@@ -293,17 +351,29 @@ pub fn start_capture(state: State<AppState>, channel_id: String) -> Result<(), S
     lock_or_recover(&state.buffers).insert(channel_id.clone(), buffer);
     write_or_recover(&state.active_channels).push(channel_id);
 
+    settings_store::save(&app, &state);
     Ok(())
 }
 
 #[tauri::command]
-pub fn stop_capture(state: State<AppState>, channel_id: String) -> Result<(), String> {
+pub fn stop_capture(app: AppHandle, state: State<AppState>, channel_id: String) -> Result<(), String> {
     lock_or_recover(&state.capture).stop_capture(&channel_id)?;
     lock_or_recover(&state.buffers).remove(&channel_id);
     lock_or_recover(&state.formats).remove(&channel_id);
     write_or_recover(&state.active_channels).retain(|id| id != &channel_id);
 
+    settings_store::save(&app, &state);
     Ok(())
+}
+
+/// Which channel ids are currently being captured - used by the frontend on
+/// startup to sync its own "enabled" checkboxes with whatever devices were
+/// automatically resumed from persisted settings (see `settings_store`),
+/// since those start capturing before the frontend ever calls
+/// `start_capture` itself.
+#[tauri::command]
+pub fn get_active_channels(state: State<AppState>) -> Vec<String> {
+    read_or_recover(&state.active_channels).clone()
 }
 
 #[tauri::command]
@@ -322,7 +392,7 @@ pub fn get_capture_status(state: State<AppState>) -> CaptureStatus {
     match &*status {
         CaptureStatus::Idle => CaptureStatus::Idle,
         CaptureStatus::Processing => CaptureStatus::Processing,
-        CaptureStatus::Ready { .. } | CaptureStatus::Failed { .. } => {
+        CaptureStatus::Ready { .. } | CaptureStatus::Conflict { .. } | CaptureStatus::Failed { .. } => {
             std::mem::replace(&mut *status, CaptureStatus::Idle)
         }
     }
@@ -338,11 +408,12 @@ pub fn get_buffer_duration(state: State<AppState>) -> u32 {
 /// after this call. Does not resize buffers already in use by an active
 /// capture - stop and restart a channel to pick up the new duration.
 #[tauri::command]
-pub fn set_buffer_duration(state: State<AppState>, seconds: u32) -> Result<(), String> {
+pub fn set_buffer_duration(app: AppHandle, state: State<AppState>, seconds: u32) -> Result<(), String> {
     if seconds == 0 {
         return Err("buffer duration must be at least 1 second".into());
     }
     *lock_or_recover(&state.buffer_duration_secs) = seconds;
+    settings_store::save(&app, &state);
     Ok(())
 }
 
@@ -409,12 +480,11 @@ pub fn export_clip(
     Ok(Some(path.display().to_string()))
 }
 
-/// Immediately resets every active channel's rolling buffer back to empty
-/// and clears the cached snapshot used by `export_clip`. Called when the set
-/// of captured devices changes, so stale audio from the old device
-/// selection never gets blended with newly-captured audio.
-#[tauri::command]
-pub fn flush_buffers(state: State<AppState>) {
+/// Clears every active channel's rolling buffer and the cached snapshot
+/// used by `export_clip`. Split out from the `flush_buffers` command so the
+/// "Reset Buffer" hotkey action (`hotkey::reset_buffer`) can share the same
+/// logic without going through Tauri's command-invocation machinery.
+pub(crate) fn flush_all_buffers(state: &AppState) {
     for buffer in lock_or_recover(&state.buffers).values() {
         buffer.clear();
     }
@@ -422,36 +492,132 @@ pub fn flush_buffers(state: State<AppState>) {
     println!("[commands] flushed all buffered audio");
 }
 
-/// Returns the accelerator string of the currently registered global hotkey.
+/// Immediately resets every active channel's rolling buffer back to empty
+/// and clears the cached snapshot used by `export_clip`. Called when the set
+/// of captured devices changes, so stale audio from the old device
+/// selection never gets blended with newly-captured audio.
 #[tauri::command]
-pub fn get_hotkey(state: State<AppState>) -> String {
-    lock_or_recover(&state.current_hotkey).clone()
+pub fn flush_buffers(state: State<AppState>) {
+    flush_all_buffers(&state);
 }
 
-/// Unregisters the current global hotkey and attempts to register `shortcut`
-/// in its place. If the new shortcut fails to register (e.g. it's already
-/// taken by another application), the previous binding is restored so the
-/// app is never left without a working hotkey, and an error is returned so
-/// the UI can notify the user.
+/// Commits whatever capture is currently staged in `AppState.pending_capture`
+/// (set by `hotkey::trigger_capture` when a clip was already loaded) into
+/// `last_snapshot` - called once the frontend's own themed confirmation
+/// modal has been accepted. A no-op if nothing is staged.
 #[tauri::command]
-pub fn update_hotkey(app: AppHandle, state: State<AppState>, shortcut: String) -> Result<(), String> {
+pub fn confirm_capture_overwrite(state: State<AppState>) {
+    let pending = lock_or_recover(&state.pending_capture).take();
+    if let Some(snapshot) = pending {
+        commit_snapshot(&state, &snapshot);
+    }
+}
+
+/// Discards whatever capture is currently staged in `AppState.pending_capture`
+/// without committing it - called once the frontend's confirmation modal is
+/// declined, leaving the current session untouched.
+#[tauri::command]
+pub fn discard_pending_capture(state: State<AppState>) {
+    *lock_or_recover(&state.pending_capture) = None;
+}
+
+/// Terminates the app entirely - closes every window and shuts down the
+/// backend cleanly. Backs the top bar menu's "Exit App" option.
+#[tauri::command]
+pub fn exit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+/// Returns the accelerator string currently bound to each named hotkey
+/// action ("captureSnip"/"showApp"/"resetBuffer") - empty means unbound.
+#[tauri::command]
+pub fn get_hotkeys(state: State<AppState>) -> std::collections::HashMap<String, String> {
+    lock_or_recover(&state.hotkeys).clone()
+}
+
+/// Unregisters `action`'s current accelerator (if any) and attempts to
+/// register `shortcut` in its place (unless `shortcut` is empty, which just
+/// leaves the action unbound). If the new shortcut fails to register (e.g.
+/// it's already taken by another application), the previous binding is
+/// restored so the action is never left silently broken, and an error is
+/// returned so the UI can notify the user.
+#[tauri::command]
+pub fn update_hotkey(
+    app: AppHandle,
+    state: State<AppState>,
+    action: String,
+    shortcut: String,
+) -> Result<(), String> {
+    let action_id = hotkey::static_action_id(&action)?;
     let global_shortcut = app.global_shortcut();
-    let mut current = lock_or_recover(&state.current_hotkey);
+    let mut hotkeys = lock_or_recover(&state.hotkeys);
+    let previous = hotkeys.get(action_id).cloned().unwrap_or_default();
 
-    if let Err(err) = global_shortcut.unregister(current.as_str()) {
-        eprintln!("[hotkey] failed to unregister previous shortcut '{current}': {err}");
-    }
-
-    if let Err(err) = global_shortcut.on_shortcut(shortcut.as_str(), hotkey::on_hotkey_triggered) {
-        if let Err(restore_err) =
-            global_shortcut.on_shortcut(current.as_str(), hotkey::on_hotkey_triggered)
-        {
-            eprintln!("[hotkey] failed to restore previous shortcut '{current}': {restore_err}");
+    if !previous.is_empty() {
+        if let Err(err) = global_shortcut.unregister(previous.as_str()) {
+            eprintln!("[hotkey] failed to unregister previous shortcut '{previous}' for '{action_id}': {err}");
         }
-        return Err(format!("failed to register hotkey '{shortcut}': {err}"));
     }
 
-    println!("[hotkey] updated global hotkey from '{current}' to '{shortcut}'");
-    *current = shortcut;
+    if !shortcut.is_empty() {
+        if let Err(err) = hotkey::register_action_hotkey(&app, action_id, shortcut.as_str()) {
+            if !previous.is_empty() {
+                if let Err(restore_err) = hotkey::register_action_hotkey(&app, action_id, previous.as_str()) {
+                    eprintln!(
+                        "[hotkey] failed to restore previous shortcut '{previous}' for '{action_id}': {restore_err}"
+                    );
+                }
+            }
+            return Err(format!("failed to register hotkey '{shortcut}': {err}"));
+        }
+    }
+
+    println!("[hotkey] updated '{action_id}' from '{previous}' to '{shortcut}'");
+    hotkeys.insert(action_id.to_string(), shortcut);
+    drop(hotkeys); // must release before `save` re-locks the same (non-reentrant) mutex
+
+    settings_store::save(&app, &state);
     Ok(())
+}
+
+/// General app-behavior preferences, configured from the Settings modal's
+/// "General" tab.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneralSettings {
+    pub minimize_to_tray: bool,
+    pub close_to_tray: bool,
+}
+
+#[tauri::command]
+pub fn get_general_settings(state: State<AppState>) -> GeneralSettings {
+    GeneralSettings {
+        minimize_to_tray: *lock_or_recover(&state.minimize_to_tray),
+        close_to_tray: *lock_or_recover(&state.close_to_tray),
+    }
+}
+
+#[tauri::command]
+pub fn set_minimize_to_tray(app: AppHandle, state: State<AppState>, enabled: bool) {
+    *lock_or_recover(&state.minimize_to_tray) = enabled;
+    settings_store::save(&app, &state);
+}
+
+#[tauri::command]
+pub fn set_close_to_tray(app: AppHandle, state: State<AppState>, enabled: bool) {
+    *lock_or_recover(&state.close_to_tray) = enabled;
+    settings_store::save(&app, &state);
+}
+
+/// Per-device default volume (linear multiplier), applied to a channel's
+/// edit params the moment a new snapshot is captured for it.
+#[tauri::command]
+pub fn get_default_volumes(state: State<AppState>) -> std::collections::HashMap<String, f32> {
+    lock_or_recover(&state.default_volumes).clone()
+}
+
+#[tauri::command]
+pub fn set_default_volume(app: AppHandle, state: State<AppState>, channel_id: String, volume: f32) {
+    lock_or_recover(&state.default_volumes).insert(channel_id, volume);
+    settings_store::save(&app, &state);
 }

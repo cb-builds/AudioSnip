@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getCaptureStatus } from "../lib/commands";
+import { confirmCaptureOverwrite, discardPendingCapture, getCaptureStatus } from "../lib/commands";
 import type { TrackSnapshot } from "../types/audio";
 
 /** How often to poll `get_capture_status`. */
@@ -17,6 +17,17 @@ export interface HotkeyCaptureState {
   diagnosticLogs: string[];
   /** Escape hatch: immediately stops polling and forces the loading overlay closed. */
   forceCancel: () => void;
+  /**
+   * Set when the backend captured a new snip while one was already loaded -
+   * the caller should render a confirmation prompt and call
+   * `confirmOverwrite`/`cancelOverwrite` based on the user's answer. `null`
+   * when there's nothing pending.
+   */
+  pendingOverwrite: TrackSnapshot[] | null;
+  /** Accepts the pending overwrite: commits it on the backend and loads it into the workspace via `onTrigger`. */
+  confirmOverwrite: () => void;
+  /** Declines the pending overwrite: discards it on the backend, leaving the current session untouched. */
+  cancelOverwrite: () => void;
 }
 
 /**
@@ -35,6 +46,7 @@ export interface HotkeyCaptureState {
 export function useHotkeyListener(onTrigger: (snapshot: TrackSnapshot[]) => void): HotkeyCaptureState {
   const [isCapturing, setIsCapturing] = useState(false);
   const [diagnosticLogs, setDiagnosticLogs] = useState<string[]>([]);
+  const [pendingOverwrite, setPendingOverwrite] = useState<TrackSnapshot[] | null>(null);
   const isCapturingRef = useRef(isCapturing);
   isCapturingRef.current = isCapturing;
   const intervalRef = useRef<number | undefined>(undefined);
@@ -98,6 +110,15 @@ export function useHotkeyListener(onTrigger: (snapshot: TrackSnapshot[]) => void
         return;
       }
 
+      if (status.status === "conflict") {
+        addLog(
+          `Poll: status = conflict - a clip is already loaded, awaiting overwrite confirmation for ${status.snapshot.length} channel(s).`,
+        );
+        attemptsRef.current = 0;
+        setPendingOverwrite(status.snapshot);
+        return;
+      }
+
       if (status.status === "ready") {
         addLog(`Poll: status = ready - loading ${status.snapshot.length} channel(s) into the workspace.`);
         attemptsRef.current = 0;
@@ -125,5 +146,26 @@ export function useHotkeyListener(onTrigger: (snapshot: TrackSnapshot[]) => void
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onTrigger]);
 
-  return { isCapturing, diagnosticLogs, forceCancel };
+  function confirmOverwrite() {
+    if (!pendingOverwrite) return;
+    const snapshot = pendingOverwrite;
+    setPendingOverwrite(null);
+    confirmCaptureOverwrite().catch((err) => console.error("[hotkey] confirm_capture_overwrite failed:", err));
+    try {
+      onTrigger(snapshot);
+      addLog("Overwrite confirmed - payload processed successfully.");
+    } catch (err) {
+      addLog(`Error while processing overwrite payload: ${err}`);
+      console.error("[hotkey] failed to process the confirmed overwrite:", err);
+    }
+  }
+
+  function cancelOverwrite() {
+    if (!pendingOverwrite) return;
+    setPendingOverwrite(null);
+    discardPendingCapture().catch((err) => console.error("[hotkey] discard_pending_capture failed:", err));
+    addLog("Overwrite declined - discarding the newly captured clip.");
+  }
+
+  return { isCapturing, diagnosticLogs, forceCancel, pendingOverwrite, confirmOverwrite, cancelOverwrite };
 }

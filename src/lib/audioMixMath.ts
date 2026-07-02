@@ -1,8 +1,5 @@
 import type { TrackEditParams, TrackSnapshot } from "../types/audio";
 
-/** Sample rate the Master Mix preview is resampled to before summing tracks. */
-export const MASTER_MIX_SAMPLE_RATE = 48_000;
-
 /** Gain range the volume controls (slider, dB box, and Amplify) allow. */
 export const MAX_GAIN_DB = 24;
 export const MIN_GAIN_DB = -40;
@@ -84,19 +81,6 @@ export function computePeakAmplitude(track: TrackSnapshot, params: TrackEditPara
   let peak = 0;
   for (let i = 0; i < trimmed.length; i++) {
     const abs = Math.abs(trimmed[i]);
-    if (abs > peak) peak = abs;
-  }
-  return peak;
-}
-
-/**
- * Finds the peak absolute value in an already-processed sample buffer (e.g.
- * the Master Mix), for "Amplify"-ing a finished mix rather than a raw track.
- */
-export function computePeak(samples: Float32Array): number {
-  let peak = 0;
-  for (let i = 0; i < samples.length; i++) {
-    const abs = Math.abs(samples[i]);
     if (abs > peak) peak = abs;
   }
   return peak;
@@ -239,43 +223,14 @@ export function applyFade(
   return faded;
 }
 
-/** Simple linear-interpolation resampler, good enough for aligning tracks before summing them for preview. */
-function resampleLinear(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
-  if (fromRate === toRate || samples.length === 0) return samples;
-
-  const ratio = toRate / fromRate;
-  const outLen = Math.round(samples.length * ratio);
-  const out = new Float32Array(outLen);
-
-  for (let i = 0; i < outLen; i++) {
-    const srcPos = i / ratio;
-    const idx = Math.floor(srcPos);
-    const frac = srcPos - idx;
-    const a = samples[idx] ?? 0;
-    const b = samples[idx + 1] ?? a;
-    out[i] = a + (b - a) * frac;
-  }
-
-  return out;
-}
-
-export interface MasterMixResult {
-  samples: Float32Array;
-  sampleRate: number;
-}
-
 /**
- * Client-side mirror of the Rust mixer's mixdown: processes every active
- * track (downmix, trim, fade, volume) and resamples it to a common rate,
- * then places it at its true chronological offset on the master timeline -
- * re-inserting, as silence, whatever `trimStartMs` cut off the front, so a
- * track trimmed to start at 5s still lands 5s into the mix instead of
- * sliding to the very beginning. Backend snapshots are already aligned so
- * every track's sample 0 represents the same real-world instant (see
- * `snapshot_active_channels` in the Rust backend); this preserves that
- * alignment through trimming instead of undoing it. `scrubOffsetMs` then
- * nudges that position further for manual micro-alignment, without
- * affecting the track's own trim/playback.
+ * Computes each track's position on the shared Master timeline - purely
+ * positional arithmetic, no audio processing, so it's cheap enough to call
+ * on every render/scrub-tick with no lag. Replaces the old pre-mixed
+ * buffer's positioning step: the Master Mix is no longer downmixed into one
+ * buffer for preview (see `Waveform`'s `overlayLayers` and
+ * `App.tsx`'s multi-source playback engine) - each track stays independent,
+ * and this is just "where does it sit on the shared timeline."
  *
  * A track's raw offset (`trimStartMs + scrubOffsetMs`) can go negative -
  * e.g. scrubbing an untrimmed track earlier than its own sample 0, to pull
@@ -283,57 +238,91 @@ export interface MasterMixResult {
  * "headroom". Rather than clamping that to 0 (which would silently discard
  * the shift and require exactly that manual trim workaround), every track's
  * offset is shifted by whatever the most negative raw offset is, so the
- * earliest track always lands at frame 0 and every other track's position
- * relative to it is preserved exactly - the master timeline's window
- * dynamically re-anchors itself instead of needing a pre-existing trim to
- * "borrow" room from.
- *
- * Finally sums every track and peak-normalizes if the sum would clip -
- * purely for the Master Mix preview/playback; the authoritative
- * mixdown/encode still happens in Rust at export time.
- *
- * This is pure computation with no DOM/AudioContext dependency, so it's
- * safe to run inside a Web Worker (see `workers/mixer.worker.ts`) as well
- * as on the main thread.
+ * earliest track always lands at 0ms and every other track's position
+ * relative to it is preserved exactly - the shared timeline dynamically
+ * re-anchors itself instead of needing a pre-existing trim to "borrow" room
+ * from.
  */
-export function computeMasterMix(
-  tracks: { snapshot: TrackSnapshot; params: TrackEditParams }[],
-): MasterMixResult {
-  const processed = tracks.map(({ snapshot, params }) => ({
-    samples: resampleLinear(
-      applyEditParams(snapshot, params),
-      snapshot.sampleRate,
-      MASTER_MIX_SAMPLE_RATE,
-    ),
-    rawOffsetMs: params.trimStartMs + params.scrubOffsetMs,
+export function computeTimelinePositions(
+  tracks: { channelId: string; trimStartMs: number; scrubOffsetMs: number }[],
+): Map<string, number> {
+  const rawOffsets = tracks.map((track) => ({
+    channelId: track.channelId,
+    rawOffsetMs: track.trimStartMs + track.scrubOffsetMs,
   }));
+  const minOffsetMs = Math.min(0, ...rawOffsets.map((track) => track.rawOffsetMs));
 
-  const minOffsetMs = Math.min(0, ...processed.map((track) => track.rawOffsetMs));
+  const positions = new Map<string, number>();
+  for (const { channelId, rawOffsetMs } of rawOffsets) {
+    positions.set(channelId, rawOffsetMs - minOffsetMs);
+  }
+  return positions;
+}
 
-  const positioned = processed.map(({ samples, rawOffsetMs }) => ({
-    samples,
-    offset: Math.round(((rawOffsetMs - minOffsetMs) / 1000) * MASTER_MIX_SAMPLE_RATE),
-  }));
+export interface MasterEnvelopeParams {
+  masterVolume: number;
+  masterFadeInMs: number;
+  masterFadeOutMs: number;
+  masterTrimStartMs: number;
+  /** Already resolved from the 0-means-"to the end" sentinel, in absolute/shared-timeline ms. */
+  masterTrimEndMs: number;
+}
 
-  const length = positioned.reduce(
-    (max, { samples, offset }) => Math.max(max, offset + samples.length),
-    0,
-  );
-  const mixed = new Float32Array(length);
+export interface MasterTrackSlice {
+  /** This track's audible samples, sliced to Master's trim window and shaped by Master's fade/volume. Empty if this track contributes nothing within the window. */
+  samples: Float32Array;
+  /** Where this slice begins on the shared/master timeline, in ms. */
+  startAbsoluteMs: number;
+}
 
-  for (const { samples, offset } of positioned) {
-    for (let i = 0; i < samples.length; i++) {
-      mixed[offset + i] += samples[i];
+/**
+ * Slices `samples` (already trim/fade/volume-processed for this one track,
+ * positioned at `trackOffsetMs` on the shared timeline) down to whatever
+ * portion falls within Master's own trim window, and applies Master's own
+ * fade in/out + volume to that portion. A single per-track pass - never any
+ * cross-track summation - so Master's fade/volume controls keep working
+ * even though tracks are never downmixed into one buffer: each one is
+ * shaped independently, informed only by its own position relative to the
+ * shared window, and gets summed acoustically by the browser once every
+ * track's `AudioBufferSourceNode` plays through the same `AudioContext`
+ * destination at the same time (see `App.tsx`'s Master playback engine).
+ */
+export function applyMasterEnvelope(
+  samples: Float32Array,
+  sampleRate: number,
+  trackOffsetMs: number,
+  envelope: MasterEnvelopeParams,
+): MasterTrackSlice {
+  const trackDurationMs = sampleRate > 0 ? (samples.length / sampleRate) * 1000 : 0;
+  const trackEndMs = trackOffsetMs + trackDurationMs;
+
+  const startAbsoluteMs = Math.max(trackOffsetMs, envelope.masterTrimStartMs);
+  const endAbsoluteMs = Math.min(trackEndMs, envelope.masterTrimEndMs);
+
+  if (endAbsoluteMs <= startAbsoluteMs) {
+    return { samples: new Float32Array(0), startAbsoluteMs };
+  }
+
+  const startFrame = msToFrames(startAbsoluteMs - trackOffsetMs, sampleRate);
+  const endFrame = msToFrames(endAbsoluteMs - trackOffsetMs, sampleRate);
+  const slice = samples.slice(startFrame, endFrame);
+
+  const fadeInEndMs = envelope.masterTrimStartMs + envelope.masterFadeInMs;
+  const fadeOutStartMs = envelope.masterTrimEndMs - envelope.masterFadeOutMs;
+
+  if (envelope.masterVolume !== 1 || envelope.masterFadeInMs > 0 || envelope.masterFadeOutMs > 0) {
+    for (let i = 0; i < slice.length; i++) {
+      const absoluteMs = startAbsoluteMs + (i / sampleRate) * 1000;
+      let gain = envelope.masterVolume;
+      if (envelope.masterFadeInMs > 0 && absoluteMs < fadeInEndMs) {
+        gain *= Math.max(0, (absoluteMs - envelope.masterTrimStartMs) / envelope.masterFadeInMs);
+      }
+      if (envelope.masterFadeOutMs > 0 && absoluteMs > fadeOutStartMs) {
+        gain *= Math.max(0, (envelope.masterTrimEndMs - absoluteMs) / envelope.masterFadeOutMs);
+      }
+      slice[i] *= gain;
     }
   }
 
-  const peak = computePeak(mixed);
-  if (peak > 1) {
-    const gain = 1 / peak;
-    for (let i = 0; i < mixed.length; i++) {
-      mixed[i] *= gain;
-    }
-  }
-
-  return { samples: mixed, sampleRate: MASTER_MIX_SAMPLE_RATE };
+  return { samples: slice, startAbsoluteMs };
 }
