@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #7c3aed transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: #7c3aed;
+  background-image: linear-gradient(180deg, #2563eb, #7c3aed);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-image: linear-gradient(180deg, #3b82f6, #8b5cf6);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Fully custom checkbox - the native control renders a plain white box when
+   unchecked, which clashes with the app's dark theme no matter what
+   `accent-color` is set to (that only tints the checked state). */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin: 0;
+  border-radius: 3px;
+  border: 1px solid #525252;
+  background-color: #262626;
+  cursor: pointer;
+  position: relative;
+}
+
+input[type="checkbox"]:hover {
+  border-color: #8b5cf6;
+}
+
+input[type="checkbox"]:checked {
+  background-color: #7c3aed;
+  border-color: #7c3aed;
+}
+
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid #8b5cf6;
+  outline-offset: 1px;
+}
+
+/* App-wide: dragging the mouse across buttons, sidebar entries, track
+   labels, and canvas titles shouldn't highlight text like a document would.
+   `user-select` is inherited, so setting it once here covers every
+   descendant; text inputs/textareas explicitly opt back in below so values
+   can still be selected and edited normally. */
+html,
+body,
+#root {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* The loading overlay's diagnostic log needs to be copy-pasteable for bug
+   reports even though it's plain divs, not an input - `!important` since
+   it sits inside the app-wide `user-select: none` cascade above. */
+.diagnostic-log-terminal {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
