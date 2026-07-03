@@ -26,4 +26,5 @@ tauri-plugin-global-shortcut = "2.3.2"
 cpal = "0.18.1"
 mp3lame-encoder = "0.2.4"
 tauri-plugin-dialog = "2.7.1"
+tauri-plugin-autostart = "2"
 

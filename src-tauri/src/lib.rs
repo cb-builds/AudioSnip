@@ -6,8 +6,18 @@ mod state;
 mod tray;
 
 use tauri::Manager;
+use tauri_plugin_autostart::ManagerExt;
 
 use commands::lock_or_recover;
+
+/// Passed to the app's own executable by the OS-level autostart entry (see
+/// the `tauri_plugin_autostart::Builder` below) - always present on an
+/// autostart-triggered launch, regardless of the user's "Start minimized"
+/// preference, since the `auto-launch` crate bakes its argument list in once
+/// at plugin setup and can't be changed per-toggle afterward. Whether the
+/// window actually stays hidden is decided in `run()`'s `setup` by combining
+/// this flag's presence with the persisted `start_minimized` preference.
+pub(crate) const MINIMIZED_LAUNCH_ARG: &str = "--minimized";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,6 +25,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("AudioSnip")
+                .arg(MINIMIZED_LAUNCH_ARG)
+                .build(),
+        )
         .manage(state::AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::list_channels,
@@ -35,6 +51,8 @@ pub fn run() {
             commands::get_general_settings,
             commands::set_minimize_to_tray,
             commands::set_close_to_tray,
+            commands::set_run_at_startup,
+            commands::set_start_minimized,
             commands::get_default_volumes,
             commands::set_default_volume,
             hotkey::request_capture,
@@ -50,6 +68,23 @@ pub fn run() {
                 *lock_or_recover(&state.minimize_to_tray) = persisted.minimize_to_tray;
                 *lock_or_recover(&state.close_to_tray) = persisted.close_to_tray;
                 *lock_or_recover(&state.buffer_duration_secs) = persisted.buffer_duration_secs;
+                *lock_or_recover(&state.run_at_startup) = persisted.run_at_startup;
+                *lock_or_recover(&state.start_minimized) = persisted.start_minimized;
+            }
+
+            // Self-heal the OS-level autostart registration to match the
+            // persisted preference every launch - the frontend also flips
+            // this directly when the checkbox changes, but re-applying it
+            // here catches drift (e.g. the user manually removed the entry,
+            // or a bundle update changed the registered exe path) and
+            // ensures the very first-ever launch (default: on) actually
+            // registers, not just shows the checkbox pre-checked.
+            if let Err(err) = if persisted.run_at_startup {
+                app.autolaunch().enable()
+            } else {
+                app.autolaunch().disable()
+            } {
+                eprintln!("[autostart] failed to sync autostart registration: {err}");
             }
 
             tray::setup(app.handle())?;
@@ -80,6 +115,19 @@ pub fn run() {
                 if let Err(err) = commands::start_capture(handle.clone(), state, channel_id.clone()) {
                     eprintln!("[settings] failed to resume capture for '{channel_id}': {err}");
                 }
+            }
+
+            // The main window is created hidden (`"visible": false` in
+            // `tauri.conf.json`) so a `--minimized` autostart launch never
+            // flashes it on screen before this check runs. Every other
+            // launch path (manual double-click, an autostart launch with
+            // "Start minimized" turned off) explicitly shows and focuses it
+            // here instead.
+            let launched_minimized = std::env::args().any(|arg| arg == MINIMIZED_LAUNCH_ARG);
+            let should_start_hidden =
+                launched_minimized && *lock_or_recover(&handle.state::<state::AppState>().start_minimized);
+            if !should_start_hidden {
+                hotkey::show_and_focus_main_window(app.handle());
             }
 
             if let Some(window) = app.get_webview_window("main") {

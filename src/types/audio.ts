@@ -48,6 +48,8 @@ export function defaultEditParams(channelId: string, volume = 1): TrackEditParam
 export interface GeneralSettings {
   minimizeToTray: boolean;
   closeToTray: boolean;
+  runAtStartup: boolean;
+  startMinimized: boolean;
 }
 
 /** The 3 named hotkey action ids the backend understands (see `hotkey.rs`). */

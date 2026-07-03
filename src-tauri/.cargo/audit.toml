@@ -1,0 +1,15 @@
+[advisories]
+ignore = [
+    # quick-xml <0.41.0 quadratic-time/memory-exhaustion DoS parsing bugs.
+    # Transitive via `plist` (used only by `tauri-utils`'s build-time macOS
+    # Info.plist handling), which pins `quick-xml = "^0.39.2"` in its own
+    # manifest as of plist 1.9.0 (its latest release) - `cargo update` cannot
+    # move past this without an upstream `plist`/`tauri-utils` release.
+    # Not reachable at runtime: this app ships Windows/NSIS only, never
+    # parses untrusted XML/plist data itself, and the vulnerable code path
+    # only executes inside macOS bundle-generation tooling that never runs
+    # for this target. Re-run `cargo audit` after bumping `tauri`/`plist` to
+    # confirm this can be dropped once a fix is available upstream.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

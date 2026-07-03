@@ -587,6 +587,8 @@ pub fn update_hotkey(
 pub struct GeneralSettings {
     pub minimize_to_tray: bool,
     pub close_to_tray: bool,
+    pub run_at_startup: bool,
+    pub start_minimized: bool,
 }
 
 #[tauri::command]
@@ -594,6 +596,8 @@ pub fn get_general_settings(state: State<AppState>) -> GeneralSettings {
     GeneralSettings {
         minimize_to_tray: *lock_or_recover(&state.minimize_to_tray),
         close_to_tray: *lock_or_recover(&state.close_to_tray),
+        run_at_startup: *lock_or_recover(&state.run_at_startup),
+        start_minimized: *lock_or_recover(&state.start_minimized),
     }
 }
 
@@ -606,6 +610,28 @@ pub fn set_minimize_to_tray(app: AppHandle, state: State<AppState>, enabled: boo
 #[tauri::command]
 pub fn set_close_to_tray(app: AppHandle, state: State<AppState>, enabled: bool) {
     *lock_or_recover(&state.close_to_tray) = enabled;
+    settings_store::save(&app, &state);
+}
+
+/// Persists the "Run at Startup" preference. The frontend flips the actual
+/// OS-level registration itself (via the autostart plugin's `enable`/
+/// `disable`, called directly from JS) before invoking this - this just
+/// remembers the choice so it can be self-healed (re-applied) on the next
+/// launch even if the OS-level entry somehow drifted (e.g. a user manually
+/// removed it, or a bundle update changed the registered exe path).
+#[tauri::command]
+pub fn set_run_at_startup(app: AppHandle, state: State<AppState>, enabled: bool) {
+    *lock_or_recover(&state.run_at_startup) = enabled;
+    settings_store::save(&app, &state);
+}
+
+/// Persists whether an autostart-triggered launch should keep the main
+/// window hidden - purely a stored preference read back on the next launch
+/// (see `lib::MINIMIZED_LAUNCH_ARG`), since the OS-level autostart entry's
+/// argument list is fixed at plugin startup and can't be changed per-toggle.
+#[tauri::command]
+pub fn set_start_minimized(app: AppHandle, state: State<AppState>, enabled: bool) {
+    *lock_or_recover(&state.start_minimized) = enabled;
     settings_store::save(&app, &state);
 }
 

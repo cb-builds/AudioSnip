@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { disable as disableAutostart, enable as enableAutostart } from "@tauri-apps/plugin-autostart";
 import {
   getBufferDuration,
   getGeneralSettings,
@@ -6,6 +7,8 @@ import {
   setBufferDuration,
   setCloseToTray,
   setMinimizeToTray,
+  setRunAtStartup,
+  setStartMinimized,
   updateHotkey,
 } from "../lib/commands";
 import { acceleratorFromKeyboardEvent } from "../lib/hotkeyRecorder";
@@ -172,6 +175,8 @@ export function Settings({
 
   const [minimizeToTray, setMinimizeToTrayState] = useState(true);
   const [closeToTray, setCloseToTrayState] = useState(true);
+  const [runAtStartup, setRunAtStartupState] = useState(true);
+  const [startMinimized, setStartMinimizedState] = useState(true);
 
   const [inputsOpen, setInputsOpen] = useState(true);
   const [outputsOpen, setOutputsOpen] = useState(true);
@@ -185,6 +190,8 @@ export function Settings({
       .then((settings) => {
         setMinimizeToTrayState(settings.minimizeToTray);
         setCloseToTrayState(settings.closeToTray);
+        setRunAtStartupState(settings.runAtStartup);
+        setStartMinimizedState(settings.startMinimized);
       })
       .catch(console.error);
   }, []);
@@ -264,6 +271,26 @@ export function Settings({
     }
   }
 
+  /** Flips the actual OS-level autostart registration (via the plugin's own enable/disable) and persists the choice so it's re-applied on the next launch. */
+  async function handleRunAtStartupChange(enabled: boolean) {
+    setRunAtStartupState(enabled);
+    try {
+      await (enabled ? enableAutostart() : disableAutostart());
+      await setRunAtStartup(enabled);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function handleStartMinimizedChange(enabled: boolean) {
+    setStartMinimizedState(enabled);
+    try {
+      await setStartMinimized(enabled);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   const inputs = channels.filter((channel) => channel.kind === "input");
   const outputs = channels.filter((channel) => channel.kind === "output");
 
@@ -333,6 +360,26 @@ export function Settings({
                   onChange={(e) => handleCloseToTrayChange(e.target.checked)}
                 />
               </label>
+
+              <label className="flex items-center justify-between text-sm text-neutral-200">
+                Run at Startup
+                <input
+                  type="checkbox"
+                  checked={runAtStartup}
+                  onChange={(e) => handleRunAtStartupChange(e.target.checked)}
+                />
+              </label>
+
+              {runAtStartup && (
+                <label className="flex items-center justify-between pl-4 text-sm text-neutral-200">
+                  Start minimized to System tray
+                  <input
+                    type="checkbox"
+                    checked={startMinimized}
+                    onChange={(e) => handleStartMinimizedChange(e.target.checked)}
+                  />
+                </label>
+              )}
 
               <div className="flex flex-col gap-2 border-t border-neutral-800 pt-3">
                 <span className="text-xs text-neutral-400">Buffer Duration</span>

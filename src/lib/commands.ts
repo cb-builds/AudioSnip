@@ -81,6 +81,16 @@ export function setCloseToTray(enabled: boolean) {
   return invoke<void>("set_close_to_tray", { enabled });
 }
 
+/** Persists the "Run at Startup" preference - call alongside the autostart plugin's own `enable()`/`disable()`, which actually flips the OS-level registration. */
+export function setRunAtStartup(enabled: boolean) {
+  return invoke<void>("set_run_at_startup", { enabled });
+}
+
+/** Persists whether an autostart-triggered launch should keep the window hidden in the tray. */
+export function setStartMinimized(enabled: boolean) {
+  return invoke<void>("set_start_minimized", { enabled });
+}
+
 /** Per-device default volume (linear multiplier), applied when a new snapshot is captured for that channel. */
 export function getDefaultVolumes() {
   return invoke<Record<string, number>>("get_default_volumes");

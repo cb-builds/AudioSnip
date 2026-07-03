@@ -19,11 +19,12 @@ fn default_buffer_duration_secs() -> u32 {
 
 /// Every user preference persisted to disk - hotkey bindings, which devices
 /// were toggled on, per-device default volumes, the tray behavior toggles,
-/// and the buffer duration - so they reload automatically the next time the
-/// app starts instead of resetting to defaults every session. Stored as
-/// `settings.json` inside the OS's standard per-app data directory (e.g.
-/// `%APPDATA%/com.audiosnip.app` on Windows), resolved via Tauri's own
-/// `app_data_dir()` rather than a hand-picked path.
+/// the buffer duration, and the startup preferences - so they reload
+/// automatically the next time the app starts instead of resetting to
+/// defaults every session. Stored as `settings.json` inside the OS's
+/// standard per-app data directory (e.g. `%APPDATA%/com.audiosnip.app` on
+/// Windows), resolved via Tauri's own `app_data_dir()` rather than a
+/// hand-picked path.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedSettings {
@@ -39,6 +40,10 @@ pub struct PersistedSettings {
     pub close_to_tray: bool,
     #[serde(default = "default_buffer_duration_secs")]
     pub buffer_duration_secs: u32,
+    #[serde(default = "default_true")]
+    pub run_at_startup: bool,
+    #[serde(default = "default_true")]
+    pub start_minimized: bool,
 }
 
 impl Default for PersistedSettings {
@@ -50,6 +55,8 @@ impl Default for PersistedSettings {
             minimize_to_tray: true,
             close_to_tray: true,
             buffer_duration_secs: DEFAULT_BUFFER_DURATION_SECS,
+            run_at_startup: true,
+            start_minimized: true,
         }
     }
 }
@@ -100,6 +107,8 @@ pub fn save(app: &AppHandle, state: &AppState) {
         minimize_to_tray: *lock_or_recover(&state.minimize_to_tray),
         close_to_tray: *lock_or_recover(&state.close_to_tray),
         buffer_duration_secs: *lock_or_recover(&state.buffer_duration_secs),
+        run_at_startup: *lock_or_recover(&state.run_at_startup),
+        start_minimized: *lock_or_recover(&state.start_minimized),
     };
 
     if let Some(parent) = path.parent() {

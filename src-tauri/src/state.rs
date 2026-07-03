@@ -60,6 +60,20 @@ pub struct AppState {
     /// edit params the moment a new snapshot is captured for it. Absent
     /// entries default to unity gain (1.0) on the frontend.
     pub default_volumes: Mutex<HashMap<String, f32>>,
+    /// Whether the app should register itself to launch when the OS starts.
+    /// The frontend flips the actual OS-level registration itself (via the
+    /// autostart plugin's `enable`/`disable`) - this mirrors that decision so
+    /// it can be persisted and self-healed (re-applied) on the next launch.
+    pub run_at_startup: Mutex<bool>,
+    /// Whether an autostart-triggered launch should keep the main window
+    /// hidden in the tray rather than showing it - only takes effect when
+    /// the process was actually started with the `--minimized` argument
+    /// (see `lib::MINIMIZED_LAUNCH_ARG`), since the autostart entry always
+    /// passes that flag regardless of this setting (the underlying
+    /// `auto-launch` crate bakes its argument list in once at plugin
+    /// startup, before any user preference can be read) - this flag is what
+    /// actually decides whether the window stays hidden.
+    pub start_minimized: Mutex<bool>,
 }
 
 impl Default for AppState {
@@ -77,6 +91,8 @@ impl Default for AppState {
             minimize_to_tray: Mutex::new(true),
             close_to_tray: Mutex::new(true),
             default_volumes: Mutex::new(HashMap::new()),
+            run_at_startup: Mutex::new(true),
+            start_minimized: Mutex::new(true),
         }
     }
 }

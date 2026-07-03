@@ -51,6 +51,17 @@ export function useHotkeyListener(onTrigger: (snapshot: TrackSnapshot[]) => void
   isCapturingRef.current = isCapturing;
   const intervalRef = useRef<number | undefined>(undefined);
   const attemptsRef = useRef(0);
+  // Mirrored into a ref (rather than listed as an effect dependency) so the
+  // long-lived poll interval below never has to tear down and restart
+  // merely because the caller passed a new function reference on some
+  // unrelated re-render - `App`'s `onTrigger` is a plain function
+  // declaration recreated every render, and re-renders happen on every
+  // animation frame while audio is playing. Without this, the interval
+  // would be cleared and re-armed faster than its own 300ms period during
+  // playback, effectively starving capture-status polling the whole time
+  // something is playing.
+  const onTriggerRef = useRef(onTrigger);
+  onTriggerRef.current = onTrigger;
 
   function addLog(message: string) {
     const line = `[${new Date().toLocaleTimeString()}] ${message}`;
@@ -123,7 +134,7 @@ export function useHotkeyListener(onTrigger: (snapshot: TrackSnapshot[]) => void
         addLog(`Poll: status = ready - loading ${status.snapshot.length} channel(s) into the workspace.`);
         attemptsRef.current = 0;
         try {
-          onTrigger(status.snapshot);
+          onTriggerRef.current(status.snapshot);
           addLog("Payload processed successfully.");
         } catch (err) {
           addLog(`Error while processing payload: ${err}`);
@@ -143,8 +154,9 @@ export function useHotkeyListener(onTrigger: (snapshot: TrackSnapshot[]) => void
 
     intervalRef.current = window.setInterval(poll, POLL_INTERVAL_MS);
     return stopPolling;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onTrigger]);
+    // Runs once for the component's lifetime - see `onTriggerRef` above for
+    // why `onTrigger` itself is deliberately not a dependency here.
+  }, []);
 
   function confirmOverwrite() {
     if (!pendingOverwrite) return;
@@ -152,7 +164,7 @@ export function useHotkeyListener(onTrigger: (snapshot: TrackSnapshot[]) => void
     setPendingOverwrite(null);
     confirmCaptureOverwrite().catch((err) => console.error("[hotkey] confirm_capture_overwrite failed:", err));
     try {
-      onTrigger(snapshot);
+      onTriggerRef.current(snapshot);
       addLog("Overwrite confirmed - payload processed successfully.");
     } catch (err) {
       addLog(`Error while processing overwrite payload: ${err}`);
