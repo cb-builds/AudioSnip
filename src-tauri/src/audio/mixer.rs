@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// Sample rate every track is resampled to before mixdown, so tracks
 /// captured from devices with different native rates can still be summed
@@ -13,6 +13,22 @@ pub struct CapturedTrack {
     pub channels: u16,
 }
 
+/// Deserializes a JSON number into a `u32`, rounding and clamping instead of
+/// erroring out on a fractional value (e.g. `4445.7894` from a UI drag/typed
+/// value that wasn't rounded before being sent over the IPC bridge). Millisecond-
+/// level precision has no audible or visual significance for trim/fade points,
+/// so this is a safe, permanent boundary sanitization rather than a workaround
+/// for a specific caller - the frontend also rounds before sending (see
+/// `commands.ts`'s `exportClip`), but this makes the backend robust even if a
+/// future caller forgets to.
+fn round_to_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = f64::deserialize(deserializer)?;
+    Ok(value.round().clamp(0.0, u32::MAX as f64) as u32)
+}
+
 /// Per-track editing parameters supplied by the React UI.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,10 +36,14 @@ pub struct TrackEditParams {
     pub channel_id: String,
     /// Linear volume multiplier (1.0 = unity gain).
     pub volume: f32,
+    #[serde(deserialize_with = "round_to_u32")]
     pub trim_start_ms: u32,
     /// `0` means "don't trim anything off the end".
+    #[serde(deserialize_with = "round_to_u32")]
     pub trim_end_ms: u32,
+    #[serde(deserialize_with = "round_to_u32")]
     pub fade_in_ms: u32,
+    #[serde(deserialize_with = "round_to_u32")]
     pub fade_out_ms: u32,
 }
 

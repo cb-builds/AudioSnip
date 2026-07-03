@@ -1,6 +1,6 @@
 [package]
 name = "audiosnip"
-version = "0.1.0"
+version = "0.1.1"
 description = "AudioSnip - Multi-Channel Audio Clipper"
 authors = ["you"]
 edition = "2021"

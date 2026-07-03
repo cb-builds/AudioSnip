@@ -44,8 +44,28 @@ export function discardPendingCapture() {
   return invoke<void>("discard_pending_capture");
 }
 
+/**
+ * Rounds every millisecond-based field to a whole integer before it crosses
+ * the Tauri IPC bridge. The Rust side deserializes these into `u32`s - a
+ * fractional value (e.g. from a waveform drag handle's pixel-to-ms math, or
+ * a `seconds * 1000` conversion landing on a floating-point value like
+ * `4445.7894...`) would otherwise fail that deserialization and surface as
+ * an export crash. `volume` is a gain multiplier, not a time value, so it's
+ * left untouched.
+ */
+function sanitizeTrackTiming(params: TrackEditParams): TrackEditParams {
+  return {
+    ...params,
+    trimStartMs: Math.round(params.trimStartMs),
+    trimEndMs: Math.round(params.trimEndMs),
+    fadeInMs: Math.round(params.fadeInMs),
+    fadeOutMs: Math.round(params.fadeOutMs),
+    scrubOffsetMs: Math.round(params.scrubOffsetMs),
+  };
+}
+
 export function exportClip(tracks: TrackEditParams[]) {
-  return invoke<string | null>("export_clip", { tracks });
+  return invoke<string | null>("export_clip", { tracks: tracks.map(sanitizeTrackTiming) });
 }
 
 /** Returns the accelerator string currently bound to each hotkey action - empty means unbound. */
