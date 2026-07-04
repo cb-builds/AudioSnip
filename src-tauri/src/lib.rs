@@ -23,6 +23,15 @@ pub(crate) const MINIMIZED_LAUNCH_ARG: &str = "--minimized";
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first - a second launch is intercepted before
+        // any other plugin/setup code runs in that second process, which
+        // then exits immediately; this closure runs in the *original*
+        // (already-running) instance instead, bringing its window forward
+        // so launching the app again feels like "focus AudioSnip," not
+        // "open a second copy."
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            hotkey::show_and_focus_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -49,6 +58,7 @@ pub fn run() {
             commands::confirm_capture_overwrite,
             commands::discard_pending_capture,
             commands::exit_app,
+            commands::reset_settings_to_default,
             commands::get_general_settings,
             commands::set_minimize_to_tray,
             commands::set_close_to_tray,
@@ -61,6 +71,7 @@ pub fn run() {
             apps::get_installed_applications,
             apps::get_exe_metadata,
             apps::add_application_source,
+            apps::remove_application_source,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

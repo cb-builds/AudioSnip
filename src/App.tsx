@@ -33,6 +33,7 @@ import {
   getActiveChannels,
   getDefaultVolumes,
   listChannels,
+  removeApplicationSource,
   requestCapture,
   setDefaultVolume,
   startCapture,
@@ -726,6 +727,24 @@ function App() {
     });
   }
 
+  /** Removes a user-added application source entirely - stops its capture on the backend first if active, then drops it from the frontend's own channel/session state. */
+  async function handleRemoveApplicationSource(id: string) {
+    try {
+      await removeApplicationSource(id);
+    } catch (err) {
+      console.error(err);
+    }
+    stopEverythingLocally();
+    setSnapshots({});
+    setChannels((prev) => prev.filter((channel) => channel.id !== id));
+    setActiveIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setActiveTrackId((prevSelected) => (prevSelected === id ? MASTER_TRACK_ID : prevSelected));
+  }
+
   function updateTrackParams(id: string, patch: Partial<TrackEditParams>) {
     stopAllPlayback();
     setEditParams((prev) => ({
@@ -919,7 +938,6 @@ function App() {
     try {
       const path = await exportClip(tracks);
       setExportStatus(path ? `Saved to ${path}` : "Export cancelled");
-      if (path) resetSessionAdjustments();
     } catch (err) {
       console.error(err);
       setExportStatus(`Export failed: ${err}`);
@@ -932,7 +950,6 @@ function App() {
     try {
       const path = await exportClip([params]);
       setTrackExportStatus(path ? `Saved to ${path}` : "Export cancelled");
-      if (path) resetSessionAdjustments();
     } catch (err) {
       console.error(err);
       setTrackExportStatus(`Export failed: ${err}`);
@@ -1063,12 +1080,13 @@ function App() {
           side="left"
           footer={
             <AccordionSection label="Toggle Audio Sources" bordered={false}>
-              <div className="max-h-40 overflow-y-auto overflow-x-hidden pt-1">
+              <div className="max-h-56 overflow-y-auto overflow-x-hidden pt-1">
                 <ChannelList
                   channels={channels}
                   activeIds={activeIds}
                   onToggle={toggleChannel}
                   onAddApplicationSource={() => setShowAddAppDialog(true)}
+                  onRemoveApplicationSource={handleRemoveApplicationSource}
                 />
               </div>
             </AccordionSection>
@@ -1383,6 +1401,8 @@ function App() {
           onToggleChannel={toggleChannel}
           defaultVolumes={defaultVolumes}
           onDefaultVolumeChange={updateDefaultVolume}
+          onAddApplicationSource={() => setShowAddAppDialog(true)}
+          onRemoveApplicationSource={handleRemoveApplicationSource}
         />
       )}
 

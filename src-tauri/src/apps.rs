@@ -197,6 +197,28 @@ pub fn add_application_source(
     Ok(source)
 }
 
+/// Removes a previously-added application source, stopping its capture
+/// first if it's currently active, then saves immediately.
+#[tauri::command]
+pub fn remove_application_source(
+    app: tauri::AppHandle,
+    state: tauri::State<crate::state::AppState>,
+    id: String,
+) -> Result<(), String> {
+    let is_active = crate::commands::read_or_recover(&state.active_channels).contains(&id);
+    if is_active {
+        crate::commands::lock_or_recover(&state.process_loopback).stop(&id)?;
+        crate::commands::lock_or_recover(&state.buffers).remove(&id);
+        crate::commands::lock_or_recover(&state.formats).remove(&id);
+        crate::commands::write_or_recover(&state.active_channels).retain(|existing| existing != &id);
+    }
+
+    crate::commands::lock_or_recover(&state.application_sources).retain(|source| source.id != id);
+
+    crate::settings_store::save(&app, &state);
+    Ok(())
+}
+
 fn resolve_app_metadata(exe_path: &str) -> AppMetadata {
     let name = file_description(exe_path).unwrap_or_else(|| title_case_from_filename(exe_path));
     let icon_base64 = extract_icon_base64(exe_path);

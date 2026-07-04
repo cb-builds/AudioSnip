@@ -45,7 +45,7 @@ pub(crate) fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// `RwLock` equivalent of [`lock_or_recover`], for `active_channels`.
-fn write_or_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+pub(crate) fn write_or_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(|poisoned| {
         eprintln!(
             "[commands] recovered from a poisoned RwLock (a prior operation panicked while holding it) - continuing with the existing data"
@@ -560,6 +560,19 @@ pub fn discard_pending_capture(state: State<AppState>) {
 #[tauri::command]
 pub fn exit_app(app: AppHandle) {
     app.exit(0);
+}
+
+/// Deletes the persisted `settings.json` and relaunches the app, so it comes
+/// back up with every default value (hotkeys, device/application selection,
+/// default volumes, tray/startup preferences, buffer duration) instead of
+/// whatever was previously saved. Backs Settings' "About" tab reset option.
+/// Relaunching (rather than trying to reset every in-memory field by hand)
+/// guarantees a genuinely clean slate, including tearing down any active
+/// captures along with the rest of the old process.
+#[tauri::command]
+pub fn reset_settings_to_default(app: AppHandle) {
+    settings_store::delete(&app);
+    app.request_restart();
 }
 
 /// Returns the accelerator string currently bound to each named hotkey

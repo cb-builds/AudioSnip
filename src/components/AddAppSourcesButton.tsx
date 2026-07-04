@@ -1,0 +1,31 @@
+/** The circle-plus icon, 10% larger (16px -> 17.6px) than its original size. */
+const PLUS_CIRCLE_ICON = (
+  <svg
+    width="17.6"
+    height="17.6"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="8" x2="12" y2="16" />
+    <line x1="8" y1="12" x2="16" y2="12" />
+  </svg>
+);
+
+/** Opens the "Add Application Source" dialog - shared by the Sources sidebar and the Settings modal's Audio Sources tab. */
+export function AddAppSourcesButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-center gap-2 rounded px-1 py-2 text-left text-sm text-neutral-300 hover:bg-neutral-800"
+    >
+      {PLUS_CIRCLE_ICON}
+      Add App Sources
+    </button>
+  );
+}

@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { disable as disableAutostart, enable as enableAutostart } from "@tauri-apps/plugin-autostart";
 import {
   getBufferDuration,
   getGeneralSettings,
   getHotkeys,
+  resetSettingsToDefault,
   setBufferDuration,
   setCloseToTray,
   setMinimizeToTray,
@@ -14,7 +16,10 @@ import {
 import { acceleratorFromKeyboardEvent } from "../lib/hotkeyRecorder";
 import type { ChannelInfo, HotkeyAction } from "../types/audio";
 import { AccordionSection } from "./AccordionSection";
+import { AddAppSourcesButton } from "./AddAppSourcesButton";
+import { ApplicationSourceGroup } from "./ApplicationSourceGroup";
 import { CompactVolumeControl } from "./CompactVolumeControl";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface SettingsProps {
   onClose: () => void;
@@ -23,6 +28,8 @@ interface SettingsProps {
   onToggleChannel: (id: string) => void;
   defaultVolumes: Record<string, number>;
   onDefaultVolumeChange: (channelId: string, volume: number) => void;
+  onAddApplicationSource: () => void;
+  onRemoveApplicationSource: (id: string) => void;
 }
 
 const HOTKEY_ACTIONS: { id: HotkeyAction; label: string }[] = [
@@ -160,8 +167,10 @@ export function Settings({
   onToggleChannel,
   defaultVolumes,
   onDefaultVolumeChange,
+  onAddApplicationSource,
+  onRemoveApplicationSource,
 }: SettingsProps) {
-  const [tab, setTab] = useState<"general" | "hotkeys" | "sources">("general");
+  const [tab, setTab] = useState<"general" | "hotkeys" | "sources" | "about">("general");
 
   const [hotkeys, setHotkeys] = useState<Partial<Record<HotkeyAction, string>>>({});
   const [recordingAction, setRecordingAction] = useState<HotkeyAction | null>(null);
@@ -170,16 +179,18 @@ export function Settings({
   const [savingAction, setSavingAction] = useState<HotkeyAction | null>(null);
 
   const [durationInput, setDurationInput] = useState("30");
-  const [durationError, setDurationError] = useState<string | null>(null);
-  const [savingDuration, setSavingDuration] = useState(false);
 
   const [minimizeToTray, setMinimizeToTrayState] = useState(true);
   const [closeToTray, setCloseToTrayState] = useState(true);
   const [runAtStartup, setRunAtStartupState] = useState(true);
   const [startMinimized, setStartMinimizedState] = useState(true);
 
-  const [inputsOpen, setInputsOpen] = useState(true);
-  const [outputsOpen, setOutputsOpen] = useState(true);
+  const [inputsOpen, setInputsOpen] = useState(false);
+  const [outputsOpen, setOutputsOpen] = useState(false);
+  const [applicationsOpen, setApplicationsOpen] = useState(false);
+
+  const [appVersion, setAppVersion] = useState("");
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   useEffect(() => {
     getHotkeys().then(setHotkeys).catch(console.error);
@@ -194,6 +205,7 @@ export function Settings({
         setStartMinimizedState(settings.startMinimized);
       })
       .catch(console.error);
+    getVersion().then(setAppVersion).catch(console.error);
   }, []);
 
   useEffect(() => {
@@ -235,22 +247,21 @@ export function Settings({
     setPendingHotkeys((prev) => ({ ...prev, [action]: "" }));
   }
 
-  async function handleSaveDuration() {
+  /** Commits the buffer duration input if it's a valid whole number of seconds - silently keeps whatever was last saved otherwise, since there's no explicit Save button to surface an error against. */
+  async function commitBufferDuration() {
     const seconds = Math.trunc(Number(durationInput));
-    if (!Number.isFinite(seconds) || seconds <= 0) {
-      setDurationError("Enter a whole number of seconds greater than 0");
-      return;
-    }
-
-    setSavingDuration(true);
-    setDurationError(null);
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
     try {
       await setBufferDuration(seconds);
     } catch (err) {
-      setDurationError(String(err));
-    } finally {
-      setSavingDuration(false);
+      console.error(err);
     }
+  }
+
+  /** Saves the buffer duration automatically, then closes - there's no separate Save button for it, so this is the only point it's committed. */
+  async function handleClose() {
+    await commitBufferDuration();
+    onClose();
   }
 
   async function handleMinimizeToTrayChange(enabled: boolean) {
@@ -291,15 +302,25 @@ export function Settings({
     }
   }
 
+  async function handleResetToDefault() {
+    setShowResetConfirm(false);
+    try {
+      await resetSettingsToDefault();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   const inputs = channels.filter((channel) => channel.kind === "input");
   const outputs = channels.filter((channel) => channel.kind === "output");
+  const applications = channels.filter((channel) => channel.kind === "application");
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-black/60">
       <div className="flex max-h-[85vh] w-[30rem] flex-col gap-4 overflow-hidden rounded-lg bg-neutral-900 text-neutral-100">
         <div className="flex items-center justify-between p-4 pb-0">
           <h2 className="text-base font-semibold">Settings</h2>
-          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-neutral-100">
+          <button type="button" onClick={handleClose} className="text-neutral-400 hover:text-neutral-100">
             &times;
           </button>
         </div>
@@ -337,6 +358,17 @@ export function Settings({
             }
           >
             Audio Sources
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("about")}
+            className={
+              tab === "about"
+                ? "border-b-2 border-violet-500 px-3 py-2 text-sm font-medium text-neutral-100"
+                : "border-b-2 border-transparent px-3 py-2 text-sm text-neutral-400 hover:text-neutral-200"
+            }
+          >
+            About
           </button>
         </div>
 
@@ -383,24 +415,17 @@ export function Settings({
 
               <div className="flex flex-col gap-2 border-t border-neutral-800 pt-3">
                 <span className="text-xs text-neutral-400">Buffer Duration</span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={durationInput}
-                  onChange={(e) => setDurationInput(e.target.value)}
-                  className="rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
-                />
-
-                {durationError && <span className="text-xs text-red-400">{durationError}</span>}
-
-                <button
-                  type="button"
-                  onClick={handleSaveDuration}
-                  disabled={savingDuration}
-                  className="self-start rounded bg-cyan-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-40"
-                >
-                  {savingDuration ? "Saving..." : "Save"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={durationInput}
+                    onChange={(e) => setDurationInput(e.target.value)}
+                    onBlur={commitBufferDuration}
+                    className="w-16 rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
+                  />
+                  <span className="text-xs text-neutral-400">seconds</span>
+                </div>
               </div>
             </>
           ) : tab === "hotkeys" ? (
@@ -428,7 +453,7 @@ export function Settings({
                 />
               ))}
             </div>
-          ) : (
+          ) : tab === "sources" ? (
             <>
               <DeviceGroup
                 label="Inputs"
@@ -450,10 +475,48 @@ export function Settings({
                 defaultVolumes={defaultVolumes}
                 onDefaultVolumeChange={onDefaultVolumeChange}
               />
+              <ApplicationSourceGroup
+                applications={applications}
+                activeIds={activeIds}
+                onToggle={onToggleChannel}
+                onRemove={onRemoveApplicationSource}
+                open={applicationsOpen}
+                onOpenChange={setApplicationsOpen}
+              />
+              <AddAppSourcesButton onClick={onAddApplicationSource} />
             </>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-neutral-400">Version</span>
+                <span className="text-sm text-neutral-200">{appVersion || "..."}</span>
+              </div>
+
+              <div className="flex flex-col gap-2 border-t border-neutral-800 pt-3">
+                <span className="text-xs text-neutral-400">
+                  Erases every saved preference (hotkeys, device/application selection, default volumes, tray and
+                  startup settings, buffer duration) and restarts the app.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowResetConfirm(true)}
+                  className="self-start rounded border border-white bg-black px-3 py-1 text-sm font-medium text-white"
+                >
+                  Reset to Default
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </div>
+
+      {showResetConfirm && (
+        <ConfirmDialog
+          message="Are you sure? This will erase all settings and restart the app."
+          onConfirm={handleResetToDefault}
+          onCancel={() => setShowResetConfirm(false)}
+        />
+      )}
     </div>
   );
 }

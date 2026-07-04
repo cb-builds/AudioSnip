@@ -29,6 +29,7 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-autostart = "2"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
 # Pinned to match whatever version `windows` resolves to internally - the

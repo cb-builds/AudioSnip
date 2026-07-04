@@ -147,3 +147,13 @@ export function getExeMetadata(path: string) {
 export function addApplicationSource(path: string) {
   return invoke<ApplicationSource>("add_application_source", { path });
 }
+
+/** Removes a previously-added application source, stopping its capture first if active. */
+export function removeApplicationSource(id: string) {
+  return invoke<void>("remove_application_source", { id });
+}
+
+/** Deletes all persisted settings and relaunches the app fresh - backs Settings' "About" tab reset option. */
+export function resetSettingsToDefault() {
+  return invoke<void>("reset_settings_to_default");
+}

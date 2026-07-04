@@ -132,3 +132,16 @@ pub fn save(app: &AppHandle, state: &AppState) {
         Err(err) => eprintln!("[settings] failed to serialize settings: {err}"),
     }
 }
+
+/// Deletes `settings.json` so the next launch's `load()` falls back to
+/// `PersistedSettings::default()` - backs the "Reset to Default" option in
+/// Settings' About tab. A missing file is not an error (that's simply the
+/// state we're trying to reach).
+pub fn delete(app: &AppHandle) {
+    let Some(path) = settings_path(app) else { return };
+    if let Err(err) = fs::remove_file(&path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("[settings] failed to delete '{}': {err}", path.display());
+        }
+    }
+}
