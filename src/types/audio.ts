@@ -1,7 +1,9 @@
 export interface ChannelInfo {
   id: string;
   name: string;
-  kind: "input" | "output";
+  kind: "input" | "output" | "application";
+  /** A `data:image/png;base64,...` icon - only ever populated for `kind: "application"` entries. */
+  iconBase64?: string | null;
 }
 
 export interface TrackSnapshot {
@@ -54,3 +56,26 @@ export interface GeneralSettings {
 
 /** The 3 named hotkey action ids the backend understands (see `hotkey.rs`). */
 export type HotkeyAction = "captureSnip" | "showApp" | "resetBuffer";
+
+/** Mirrors Rust's `apps::AppInfo` - a running or installed application discovered by `get_active_applications`/`get_installed_applications`. */
+export interface AppInfo {
+  name: string;
+  exePath: string;
+  windowTitle: string | null;
+  /** A `data:image/png;base64,...` URL, or `null` if not resolved yet (e.g. the "All apps" list, which fetches icons lazily). */
+  iconBase64: string | null;
+}
+
+/** Mirrors Rust's `apps::AppMetadata` - returned by `get_exe_metadata` for an arbitrary executable path. */
+export interface AppMetadata {
+  name: string;
+  iconBase64: string | null;
+}
+
+/** Mirrors Rust's `apps::ApplicationSource` - a user-added application Sources entry, persisted across restarts. */
+export interface ApplicationSource {
+  id: string;
+  name: string;
+  exePath: string;
+  iconBase64: string | null;
+}

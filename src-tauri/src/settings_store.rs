@@ -3,6 +3,7 @@ use std::fs;
 
 use tauri::{AppHandle, Manager};
 
+use crate::apps::ApplicationSource;
 use crate::commands::{lock_or_recover, read_or_recover};
 use crate::hotkey;
 use crate::state::{AppState, DEFAULT_BUFFER_DURATION_SECS};
@@ -44,6 +45,8 @@ pub struct PersistedSettings {
     pub run_at_startup: bool,
     #[serde(default = "default_true")]
     pub start_minimized: bool,
+    #[serde(default)]
+    pub application_sources: Vec<ApplicationSource>,
 }
 
 impl Default for PersistedSettings {
@@ -57,6 +60,7 @@ impl Default for PersistedSettings {
             buffer_duration_secs: DEFAULT_BUFFER_DURATION_SECS,
             run_at_startup: true,
             start_minimized: true,
+            application_sources: Vec::new(),
         }
     }
 }
@@ -109,6 +113,7 @@ pub fn save(app: &AppHandle, state: &AppState) {
         buffer_duration_secs: *lock_or_recover(&state.buffer_duration_secs),
         run_at_startup: *lock_or_recover(&state.run_at_startup),
         start_minimized: *lock_or_recover(&state.start_minimized),
+        application_sources: lock_or_recover(&state.application_sources).clone(),
     };
 
     if let Some(parent) = path.parent() {

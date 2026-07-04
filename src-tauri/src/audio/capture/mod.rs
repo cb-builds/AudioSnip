@@ -1,16 +1,20 @@
+pub mod process_loopback;
 pub mod wasapi;
 
 use std::sync::Arc;
 
 use crate::audio::ring_buffer::RollingBuffer;
 
-/// Whether a channel is a real microphone/line input, or a loopback capture
-/// of an output/render device (speakers, GoXLR virtual channels, etc).
+/// Whether a channel is a real microphone/line input, a loopback capture of
+/// an output/render device (speakers, GoXLR virtual channels, etc), or a
+/// user-added application-specific source (captured via process-loopback,
+/// see `process_loopback.rs`).
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelKind {
     Input,
     Output,
+    Application,
 }
 
 /// Describes a capturable audio channel/device discovered on the host.
@@ -20,6 +24,9 @@ pub struct ChannelInfo {
     pub id: String,
     pub name: String,
     pub kind: ChannelKind,
+    /// A `data:image/png;base64,...` icon, populated only for
+    /// `ChannelKind::Application` entries (see `apps::ApplicationSource`).
+    pub icon_base64: Option<String>,
 }
 
 /// Negotiated format of an opened capture stream. Needed downstream for

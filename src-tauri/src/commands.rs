@@ -5,7 +5,8 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-use crate::audio::capture::ChannelInfo;
+use crate::apps;
+use crate::audio::capture::{ChannelInfo, ChannelKind};
 use crate::audio::encoder;
 use crate::audio::mixer::{self, TrackEditParams};
 use crate::audio::ring_buffer::RollingBuffer;
@@ -335,9 +336,31 @@ pub fn snapshot_active_channels(state: &AppState) -> Vec<TrackSnapshot> {
     snapshot
 }
 
+/// Every device channel plus every user-added application source, merged
+/// into one list - the frontend doesn't distinguish where a channel comes
+/// from except via `kind`/`iconBase64`.
 #[tauri::command]
 pub fn list_channels(state: State<AppState>) -> Vec<ChannelInfo> {
-    lock_or_recover(&state.capture).list_channels()
+    let mut channels = lock_or_recover(&state.capture).list_channels();
+    for source in lock_or_recover(&state.application_sources).iter() {
+        channels.push(ChannelInfo {
+            id: source.id.clone(),
+            name: source.name.clone(),
+            kind: ChannelKind::Application,
+            icon_base64: source.icon_base64.clone(),
+        });
+    }
+    channels
+}
+
+/// Looks up `channel_id` against the persisted application sources list -
+/// `Some(exe_path)` if it refers to a user-added application source,
+/// `None` if it's an ordinary device channel.
+fn application_source_exe_path(state: &AppState, channel_id: &str) -> Option<String> {
+    lock_or_recover(&state.application_sources)
+        .iter()
+        .find(|source| source.id == channel_id)
+        .map(|source| source.exe_path.clone())
 }
 
 #[tauri::command]
@@ -345,7 +368,13 @@ pub fn start_capture(app: AppHandle, state: State<AppState>, channel_id: String)
     let duration_secs = *lock_or_recover(&state.buffer_duration_secs);
     let buffer = RollingBuffer::new(capacity_for_duration(duration_secs));
 
-    let format = lock_or_recover(&state.capture).start_capture(&channel_id, buffer.clone())?;
+    let format = if let Some(exe_path) = application_source_exe_path(&state, &channel_id) {
+        let pid = apps::find_running_pid_for_exe(&exe_path)
+            .ok_or_else(|| format!("'{exe_path}' isn't currently running"))?;
+        lock_or_recover(&state.process_loopback).start(&channel_id, pid, buffer.clone())?
+    } else {
+        lock_or_recover(&state.capture).start_capture(&channel_id, buffer.clone())?
+    };
 
     lock_or_recover(&state.formats).insert(channel_id.clone(), format);
     lock_or_recover(&state.buffers).insert(channel_id.clone(), buffer);
@@ -357,7 +386,12 @@ pub fn start_capture(app: AppHandle, state: State<AppState>, channel_id: String)
 
 #[tauri::command]
 pub fn stop_capture(app: AppHandle, state: State<AppState>, channel_id: String) -> Result<(), String> {
-    lock_or_recover(&state.capture).stop_capture(&channel_id)?;
+    if application_source_exe_path(&state, &channel_id).is_some() {
+        lock_or_recover(&state.process_loopback).stop(&channel_id)?;
+    } else {
+        lock_or_recover(&state.capture).stop_capture(&channel_id)?;
+    }
+
     lock_or_recover(&state.buffers).remove(&channel_id);
     lock_or_recover(&state.formats).remove(&channel_id);
     write_or_recover(&state.active_channels).retain(|id| id != &channel_id);

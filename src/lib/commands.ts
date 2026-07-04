@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AppInfo,
+  AppMetadata,
+  ApplicationSource,
   CaptureStatus,
   ChannelInfo,
   GeneralSettings,
@@ -123,4 +126,24 @@ export function setDefaultVolume(channelId: string, volume: number) {
 /** Terminates the app entirely - backs the top bar menu's "Exit App" option. */
 export function exitApp() {
   return invoke<void>("exit_app");
+}
+
+/** Currently running applications with at least one visible, titled window - backs the "Add Application Source" dialog's "Open apps" tab. */
+export function getActiveApplications() {
+  return invoke<AppInfo[]>("get_active_applications");
+}
+
+/** Every application registered in the Windows Uninstall registry - backs the "All apps" tab. Icons aren't populated eagerly; fetch per-row via `getExeMetadata`. */
+export function getInstalledApplications() {
+  return invoke<AppInfo[]>("get_installed_applications");
+}
+
+/** Resolves a friendly name and icon for an arbitrary executable path - used for the "Browse for a different app" flow and lazy per-row icon loading. */
+export function getExeMetadata(path: string) {
+  return invoke<AppMetadata>("get_exe_metadata", { path });
+}
+
+/** Adds (or updates) a persisted application source for the given executable path - it's then returned by `listChannels()` (`kind: "application"`) like any other channel. */
+export function addApplicationSource(path: string) {
+  return invoke<ApplicationSource>("add_application_source", { path });
 }

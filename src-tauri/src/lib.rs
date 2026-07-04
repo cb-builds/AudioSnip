@@ -1,3 +1,4 @@
+mod apps;
 mod audio;
 mod commands;
 mod hotkey;
@@ -56,6 +57,10 @@ pub fn run() {
             commands::get_default_volumes,
             commands::set_default_volume,
             hotkey::request_capture,
+            apps::get_active_applications,
+            apps::get_installed_applications,
+            apps::get_exe_metadata,
+            apps::add_application_source,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -70,6 +75,7 @@ pub fn run() {
                 *lock_or_recover(&state.buffer_duration_secs) = persisted.buffer_duration_secs;
                 *lock_or_recover(&state.run_at_startup) = persisted.run_at_startup;
                 *lock_or_recover(&state.start_minimized) = persisted.start_minimized;
+                *lock_or_recover(&state.application_sources) = persisted.application_sources.clone();
             }
 
             // Self-heal the OS-level autostart registration to match the

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::apps::ApplicationSource;
+use crate::audio::capture::process_loopback::ProcessLoopbackManager;
 use crate::audio::capture::wasapi::WasapiCaptureBackend;
 use crate::audio::capture::{CaptureBackend, StreamFormat};
 use crate::audio::ring_buffer::RollingBuffer;
@@ -74,6 +76,14 @@ pub struct AppState {
     /// startup, before any user preference can be read) - this flag is what
     /// actually decides whether the window stays hidden.
     pub start_minimized: Mutex<bool>,
+    /// User-added application sources (see `apps::add_application_source`),
+    /// persisted across restarts and rendered in the Sources sidebar
+    /// alongside device channels.
+    pub application_sources: Mutex<Vec<ApplicationSource>>,
+    /// Live process-loopback captures for application sources - separate
+    /// from `capture` (device-based, via `cpal`) since per-application
+    /// capture talks to WASAPI directly (see `process_loopback.rs`).
+    pub process_loopback: Mutex<ProcessLoopbackManager>,
 }
 
 impl Default for AppState {
@@ -93,6 +103,8 @@ impl Default for AppState {
             default_volumes: Mutex::new(HashMap::new()),
             run_at_startup: Mutex::new(true),
             start_minimized: Mutex::new(true),
+            application_sources: Mutex::new(Vec::new()),
+            process_loopback: Mutex::new(ProcessLoopbackManager::default()),
         }
     }
 }

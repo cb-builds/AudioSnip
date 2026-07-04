@@ -55,6 +55,13 @@ impl CaptureBackend for WasapiCaptureBackend {
         let config = match kind {
             ChannelKind::Input => device.default_input_config(),
             ChannelKind::Output => device.default_output_config(),
+            // `find_device` only ever resolves against this backend's own
+            // enumerated input/output devices - application sources are
+            // captured entirely separately, via `process_loopback.rs`, and
+            // never reach this backend at all (see `commands::start_capture`).
+            ChannelKind::Application => {
+                return Err(format!("'{channel_id}' is an application source, not a device"))
+            }
         }
         .map_err(|err| format!("failed to read default config for '{channel_id}': {err}"))?;
 
@@ -122,6 +129,7 @@ fn devices_to_channel_info(
             id,
             name: device.to_string(),
             kind,
+            icon_base64: None,
         })
         .collect()
 }

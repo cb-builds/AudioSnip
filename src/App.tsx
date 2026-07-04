@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import logoUrl from "./assets/logo.PNG";
 import { AccordionSection } from "./components/AccordionSection";
+import { AddApplicationDialog } from "./components/AddApplicationDialog";
 import { AudioOptionsPanel } from "./components/AudioOptionsPanel";
 import { ChannelList } from "./components/ChannelList";
 import { CollapsibleSidebar } from "./components/CollapsibleSidebar";
@@ -99,6 +100,7 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showAddAppDialog, setShowAddAppDialog] = useState(false);
   // True from the instant a capture (initial or confirmed-overwrite) is
   // accepted until its data has actually been applied - drives the center
   // panel's "Loading audio snip" text. Set/cleared around a deferred
@@ -1062,11 +1064,12 @@ function App() {
           footer={
             <AccordionSection label="Toggle Audio Sources" bordered={false}>
               <div className="max-h-40 overflow-y-auto overflow-x-hidden pt-1">
-                {channels.length === 0 ? (
-                  <span className="text-xs text-neutral-500">No devices found.</span>
-                ) : (
-                  <ChannelList channels={channels} activeIds={activeIds} onToggle={toggleChannel} />
-                )}
+                <ChannelList
+                  channels={channels}
+                  activeIds={activeIds}
+                  onToggle={toggleChannel}
+                  onAddApplicationSource={() => setShowAddAppDialog(true)}
+                />
               </div>
             </AccordionSection>
           }
@@ -1087,13 +1090,19 @@ function App() {
               key={channel.id}
               type="button"
               onClick={() => selectTrack(channel.id)}
-              className={`w-full truncate rounded px-2 py-1.5 text-left text-sm transition-colors ${
+              className={`flex w-full items-center gap-2 truncate rounded px-2 py-1.5 text-left text-sm transition-colors ${
                 activeTrackId === channel.id
                   ? "bg-gradient-to-br from-blue-600 to-violet-600 text-white"
                   : "text-neutral-300 hover:bg-neutral-800"
               }`}
             >
-              {channel.name}
+              {channel.kind === "application" &&
+                (channel.iconBase64 ? (
+                  <img src={channel.iconBase64} alt="" className="h-4 w-4 shrink-0 object-contain" />
+                ) : (
+                  <span className="h-4 w-4 shrink-0 rounded bg-neutral-700" />
+                ))}
+              <span className="truncate">{channel.name}</span>
             </button>
           ))}
         </CollapsibleSidebar>
@@ -1394,6 +1403,23 @@ function App() {
           message="Are you sure?"
           onConfirm={performResetBuffer}
           onCancel={() => setShowResetConfirm(false)}
+        />
+      )}
+
+      {showAddAppDialog && (
+        <AddApplicationDialog
+          onClose={() => setShowAddAppDialog(false)}
+          onAdd={(source) => {
+            setChannels((prev) => [
+              ...prev.filter((existing) => existing.id !== source.id),
+              { id: source.id, name: source.name, kind: "application", iconBase64: source.iconBase64 },
+            ]);
+            // Capturing a specific application is the whole point of adding
+            // it - toggle it on immediately rather than making the user
+            // separately find it in the new "Applications" group and check
+            // it themselves.
+            toggleChannel(source.id);
+          }}
         />
       )}
     </main>
